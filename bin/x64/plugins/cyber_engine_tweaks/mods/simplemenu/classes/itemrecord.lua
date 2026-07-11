@@ -80,19 +80,37 @@ function ItemRecord:new(TDBItemRecord)
         end
     end
 
-    if TDBItemRecord:Quality() == nil then
-        print("Nil quality:", TDBItemRecord:GetID().value)
+    local gotQuality, qualityRec = pcall(function() return TDBItemRecord:Quality() end)
+    if not gotQuality or qualityRec == nil then
+        print("[SimpleMenu] Nil quality on record:", TDBItemRecord:GetID().value)
+        qualityRec = nil
     end
 
-    local qualityName = T(
-        TDBItemRecord:Quality():Value() ~= -1,
-        GetLocalizedText(UIItemsHelper.QualityToTierPlusString(TDBItemRecord:Quality():Type())),
-        UILabels.universalelements.random
-    )
+    local qualityName, qualityLevel
+    if qualityRec ~= nil then
+        local gotVal, qVal = pcall(function() return qualityRec:Value() end)
+        qualityLevel = (gotVal and qVal) or -1
+        if qualityLevel ~= -1 then
+            local gotType, qType = pcall(function() return qualityRec:Type() end)
+            if gotType and qType ~= nil then
+                local gotLoc, qStr = pcall(function()
+                    return GetLocalizedText(UIItemsHelper.QualityToTierPlusString(qType))
+                end)
+                qualityName = (gotLoc and qStr) or UILabels.universalelements.random
+            else
+                qualityName = UILabels.universalelements.random
+            end
+        else
+            qualityName = UILabels.universalelements.random
+        end
+    else
+        qualityName = UILabels.universalelements.random
+        qualityLevel = -1
+    end
 
     local o = {
         LocalizedName  = Game.GetLocalizedTextByKey(TDBItemRecord:DisplayName()),
-        QualityLevel   = TDBItemRecord:Quality():Value(),
+        QualityLevel   = qualityLevel,
         QualityName    = qualityName,
         VisualTags     = vt,
         TDBTags        = TDBItemRecord:Tags(),
@@ -318,7 +336,10 @@ function ItemRecord:GetName()
 end
 
 function ItemRecord:GetQuality()
-    return T(self.QualityName ~= nil or self.QualityName ~= "", self.QualityName, nil)
+    -- `nil or X` always returns X, and `s ~= nil` is always true for any string,
+    -- so the previous `or` version was a no-op (always returned QualityName).
+    -- Use `and` so we only return the name when it is non-nil AND non-empty.
+    return T(self.QualityName ~= nil and self.QualityName ~= "", self.QualityName, nil)
 end
 
 function ItemRecord:GetType()

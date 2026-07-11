@@ -4,8 +4,8 @@ local Util = {
     quickTelePath = "config/quickTele.json",
     configuration = {},
     configurationDefault = {
-        version = 51,
-        modVersion = 51,
+        version = 52,
+        modVersion = 52,
         isBeta = true,
         autoUI = true,
         initNotification = false,
@@ -184,7 +184,10 @@ function Util.fileExists(filename)
 end
 
 function Util.ResetConfig()
-    Util.configuration = Util.configurationDefault
+    -- Use a deep copy of the defaults so mutating the user's config never
+    -- corrupts the shared `configurationDefault` table (which would also
+    -- affect future fresh installs).
+    Util.configuration = Util.DeepCopy(Util.configurationDefault)
 
     --Set some defaults that need to be loaded
     Util.configuration.functions.quickTeleports[1].name = UILabels.misc.teleport.bApartment
@@ -193,6 +196,51 @@ function Util.ResetConfig()
     print("[SimpleMenu] User configuration reset")
     Util.SaveConfig(true)
 end
+
+--Recursively merge `src` into `dst`, preserving existing values in `dst`
+--and adding any missing keys from `src`. Tables are merged key-by-key;
+--scalars in `dst` are kept. Used for non-destructive config migration.
+local function mergeDefaults(dst, src)
+    if type(dst) ~= "table" or type(src) ~= "table" then
+        return dst
+    end
+    for k, v in pairs(src) do
+        if type(v) == "table" then
+            if dst[k] == nil or type(dst[k]) ~= "table" then
+                dst[k] = {}
+            end
+            mergeDefaults(dst[k], v)
+        else
+            if dst[k] == nil then
+                dst[k] = v
+            end
+        end
+    end
+    return dst
+end
+
+Util.mergeDefaults = mergeDefaults
+
+--Deep (recursive) copy of a table. Unlike CetUtils.TableCopy (which is shallow),
+--this fully clones nested tables so mutating the copy never affects the original.
+--Important for cloning `configurationDefault` so user mutations can't corrupt
+--the defaults that future fresh installs would inherit.
+local function deepCopy(orig)
+    if type(orig) ~= "table" then
+        return orig
+    end
+    local copy = {}
+    for k, v in pairs(orig) do
+        if type(v) == "table" then
+            copy[k] = deepCopy(v)
+        else
+            copy[k] = v
+        end
+    end
+    return copy
+end
+
+Util.DeepCopy = deepCopy
 
 function Util.LoadConfig()
     if not Util.fileExists(Util.configPath) then
@@ -208,25 +256,29 @@ function Util.LoadConfig()
     if file ~= nil then
         local config = json.decode(file:read("*a"))
         file:close()
-        Util.configuration = config
 
-        local sameVersion =
-            (Util.configuration.version == Util.configurationDefault.version) and
-            (Util.configuration.isBeta ~= nil) and
-            (Util.configuration.isBeta == Util.configurationDefault.isBeta)
-
-        if (sameVersion) then
-            print("[SimpleMenu] Version", Util.configuration.version, "- User configuration loaded")
-            Util.configuration.functions.quickTeleports = Util.LoadQuickTeleports()
-            Util.CreateQuickTeleports(Util.configuration.functions.quickTeleports)
+        if config == nil then
+            print("[SimpleMenu] Failed to decode user configuration; using defaults")
+            Util.configuration = Util.DeepCopy(Util.configurationDefault)
         else
-            print("[SimpleMenu] Version", Util.configuration.version, "- User configuration is outdated and will be replaced with a new one")
-            Util.ResetConfig()
-            Util.configuration.functions.quickTeleports = Util.LoadQuickTeleports()
-            Util.CreateQuickTeleports(Util.configuration.functions.quickTeleports)
+            -- Non-destructive migration: pull in any new default keys the user's
+            -- old config doesn't have, while preserving their existing values.
+            -- This replaces the old behavior of wiping the entire config whenever
+            -- the version number changed.
+            local oldVersion = config.version
+            mergeDefaults(config, Util.configurationDefault)
+            config.version = Util.configurationDefault.version
+            config.modVersion = Util.configurationDefault.modVersion
+            config.isBeta = Util.configurationDefault.isBeta
+            Util.configuration = config
+            print("[SimpleMenu] Configuration loaded (was v"..tostring(oldVersion)..", now v"..config.version..")")
         end
+
+        Util.configuration.functions.quickTeleports = Util.LoadQuickTeleports()
+        Util.CreateQuickTeleports(Util.configuration.functions.quickTeleports)
     else
         print("[SimpleMenu] Failed to load user configuration")
+        Util.configuration = Util.DeepCopy(Util.configurationDefault)
     end
 end
 

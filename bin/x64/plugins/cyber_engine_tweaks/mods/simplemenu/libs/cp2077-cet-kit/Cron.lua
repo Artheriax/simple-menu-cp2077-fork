@@ -5,7 +5,7 @@ Timed Tasks Manager
 Copyright (c) 2021 psiberx
 ]]
 
-local Cron = { version = '1.0.2' }
+local Cron = { version = '1.0.3' }
 
 local timers = {}
 local counter = 0
@@ -149,6 +149,8 @@ end
 ---@return void?
 function Cron.Update(delta)
 	if #timers > 0 then
+		local finished = {}
+
 		for i, timer in ipairs(timers) do
 			if timer.active then
 				timer.delay = timer.delay - delta
@@ -157,12 +159,17 @@ function Cron.Update(delta)
 					if timer.recurring then
 						timer.delay = timer.delay + timer.timeout
 					else
-						table.remove(timers, i)
-						i = i - 1
+						table.insert(finished, i)
 					end
 
 					timer.callback(timer.args)
 				end
+			end
+		end
+
+		if #finished > 0 then
+			for i = #finished, 1, -1 do
+				table.remove(timers, finished[i])
 			end
 		end
 	end

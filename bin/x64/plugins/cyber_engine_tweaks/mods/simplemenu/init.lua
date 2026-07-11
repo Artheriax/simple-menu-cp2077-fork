@@ -2,6 +2,10 @@
 --                Simple Menu created by Dank Rafft                             --
 --                Currently maintained by: capncoolio2                          --
 --                https://www.nexusmods.com/cyberpunk2077/mods/818              --
+--                                                                              --
+--                Fork for Cyberpunk 2.31 compatibility                         --
+--                Maintained by: Artheriax                                      --
+--                https://github.com/Artheriax/simple-menu-cp2077-fork          --
 ----------------------------------------------------------------------------------
 
 ----------------
@@ -375,6 +379,14 @@ local function AddItemToStash(tdbid)
 end
 
 local function PostLoadActions()
+    -- Defensive guard: ensure the player exists before re-applying modifiers.
+    -- On hot-reloads or some edge case loads, Game.GetPlayer() can briefly be nil,
+    -- and ChangeModifiers would silently no-op in the best case or error in others.
+    if Game.GetPlayer() == nil then
+        DEBUG_printl(LOG_LEVEL.Info, "PostLoadActions: player not ready yet, skipping")
+        return
+    end
+
     --Infinite Stamina
     SimpleMenu.Player.ChangeModifiers(
         SimpleMenu.Player.EPlayerMod.InfiniteStamina,
@@ -396,16 +408,28 @@ local function PostLoadActions()
     for k, v in pairs(ModState.SVars.Mods) do
         if v then
             local enumVal = SimpleMenu.Player.EPlayerMod[k]
-            SimpleMenu.Player.ChangeModifiers(enumVal, true)
-            DEBUG_printl(LOG_LEVEL.Trace, "Enabled modifier after load:", k)
+            if enumVal ~= nil then
+                SimpleMenu.Player.ChangeModifiers(enumVal, true)
+                DEBUG_printl(LOG_LEVEL.Trace, "Enabled modifier after load:", k)
+            else
+                print("[SimpleMenu] PostLoadActions: unknown modifier key in config:", k, "-- ignored")
+            end
         end
     end
 
     --Set up craftbook
-    RefreshCraftBookMenu()
+    local okCraft, errCraft = pcall(RefreshCraftBookMenu)
+    if not okCraft then
+        print("[SimpleMenu] PostLoadActions: RefreshCraftBookMenu failed:", errCraft)
+    end
 
     --Set Police System state
-    SimpleMenu.Misc.DisablePolice(SimpleMenu.Util.configuration.functions.disablePolice)
+    local okPolice, errPolice = pcall(function()
+        SimpleMenu.Misc.DisablePolice(SimpleMenu.Util.configuration.functions.disablePolice)
+    end)
+    if not okPolice then
+        print("[SimpleMenu] PostLoadActions: DisablePolice failed:", errPolice)
+    end
 
     SetPlayerInvisibilityState()
 end

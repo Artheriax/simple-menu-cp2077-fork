@@ -1,0 +1,25 @@
+# User-generated config files (created at runtime, must not be committed)
+bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/config/config.json
+bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/config/quickTele.json
+bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/translation/lang.json
+
+# Runtime logs
+bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/*.log
+bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/simplemenu.log
+
+# Packaged release archives
+*.zip
+*.7z
+*.rar
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

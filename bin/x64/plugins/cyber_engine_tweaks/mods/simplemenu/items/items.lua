@@ -285,10 +285,10 @@ function Items.GetFilteredRecords(records, types, tagsMatchList, tagsExcludeList
 
     if #types == 0 then
         Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchList, idExcludeList, outRecordList)
-        return result
     else
         Items.ProcessFilters(intermediate, tagsMatchList, tagsExcludeList, idMatchList, idExcludeList, outRecordList)
     end
+    -- results are written into outRecordList (passed by reference); no return value.
 end
 
 function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchList, idExcludeList, outRecordList)
@@ -445,7 +445,11 @@ end
 
 function Items.AddItem(category, type, amount)
     --Add the item to the inventory
-    local record = Items.itemrecords[category][type]
+    local record = Items.itemrecords[category] and Items.itemrecords[category][type]
+    if record == nil then
+        print("[SimpleMenu] AddItem: invalid category/type")
+        return
+    end
     Game.AddToInventory(record:GetID(), amount)
 
     print("[SimpleMenu]", amount, "item(s) of type", record:GetQName(), "added")

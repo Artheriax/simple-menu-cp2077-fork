@@ -49,18 +49,39 @@ local facts = {
 }
 
 function Misc.ChangeFact(category, type, value)
-    if (category == 3) then
-        Game.GetQuestsSystem():SetFactStr(facts[category][type], value)
-        print("[SimpleMenu] Romance quest fact", facts[category][type], "set to", value)
+    if category == nil or facts[category] == nil or facts[category][type] == nil then
+        print("[SimpleMenu] ChangeFact: invalid category/type")
+        return
     end
     Game.GetQuestsSystem():SetFactStr(facts[category][type], value)
-    print("[SimpleMenu] Quest fact", facts[category][type], "set to", value)
+    if category == 3 then
+        print("[SimpleMenu] Romance quest fact", facts[category][type], "set to", value)
+    else
+        print("[SimpleMenu] Quest fact", facts[category][type], "set to", value)
+    end
 end
 
 function Misc.EndQuest()
     local jm = Game.GetJournalManager()
+    if jm == nil then
+        print("[SimpleMenu] EndQuest: JournalManager not available")
+        return
+    end
     local te = jm:GetTrackedEntry()
-    local qe = jm:GetParentEntry(jm:GetParentEntry(te))
+    if te == nil then
+        print("[SimpleMenu] EndQuest: no tracked quest found")
+        return
+    end
+    local parent = jm:GetParentEntry(te)
+    if parent == nil then
+        print("[SimpleMenu] EndQuest: cannot resolve quest parent")
+        return
+    end
+    local qe = jm:GetParentEntry(parent)
+    if qe == nil then
+        print("[SimpleMenu] EndQuest: cannot resolve quest entry")
+        return
+    end
     local qeh = jm:GetEntryHash(qe)
     jm:ChangeEntryStateByHash(qeh, "Succeeded", "Notify")
     print("[SimpleMenu] Current active quest ended")
@@ -72,19 +93,36 @@ function Misc.Untrack()
 end
 
 function Misc.UnlockAchieve()
-    Game.UnlockAllAchievements()
-    print("[SimpleMenu] All achievements unlocked")
+    -- Game.UnlockAllAchievements() was temporarily removed in v48 and re-added later.
+    -- Wrap in pcall so a missing/renamed API on any future patch doesn't hard-crash the menu.
+    local ok = pcall(function() Game.UnlockAllAchievements() end)
+    if ok then
+        print("[SimpleMenu] All achievements unlocked")
+    else
+        print("[SimpleMenu] UnlockAllAchievements: API not available on this game version")
+    end
 end
 
 function Misc.Kill()
-    local tgt = Game.GetTargetingSystem()
-    local lookAtObj = tgt:GetLookAtObject(Game.GetPlayer())
-    if lookAtObj ~= nil then
-        if lookAtObj:IsExactlyA("NPCPuppet") then
-            lookAtObj:Kill()
-        end
+    local player = Game.GetPlayer()
+    if player == nil then
+        print("[SimpleMenu] Kill: player not available")
+        return false
     end
-    print("[SimpleMenu] Killed NPC")
+    local tgt = Game.GetTargetingSystem()
+    local lookAtObj = tgt:GetLookAtObject(player)
+    if lookAtObj == nil then
+        print("[SimpleMenu] Kill: no target under crosshair")
+        return false
+    end
+    if lookAtObj:IsExactlyA("NPCPuppet") then
+        lookAtObj:Kill()
+        print("[SimpleMenu] Killed NPC")
+        return true
+    else
+        print("[SimpleMenu] Kill: target is not an NPC")
+        return false
+    end
 end
 
 function Misc.SlowMotion(effect)
@@ -139,8 +177,13 @@ function Misc.SlowMoDilPlus()
 end
 
 function Misc.PoliceLevel(wantedLevel)
-    local ps = Game.GetPlayer():GetPreventionSystem()
-    if not ps:IsSystemEnabled() then
+    local player = Game.GetPlayer()
+    if player == nil then
+        print("[SimpleMenu] PoliceLevel: player not available")
+        return
+    end
+    local ps = player:GetPreventionSystem()
+    if ps == nil or not ps:IsSystemEnabled() then
         print("[SimpleMenu] Police system disabled")
         return
     end
@@ -151,8 +194,13 @@ function Misc.PoliceLevel(wantedLevel)
 end
 
 function Misc.PoliceLevelStep(step)
-    local ps = Game.GetPlayer():GetPreventionSystem()
-    if not ps:IsSystemEnabled() then
+    local player = Game.GetPlayer()
+    if player == nil then
+        print("[SimpleMenu] PoliceLevelStep: player not available")
+        return false
+    end
+    local ps = player:GetPreventionSystem()
+    if ps == nil or not ps:IsSystemEnabled() then
         print("[SimpleMenu] Police system disabled")
         return false
     end
@@ -168,12 +216,27 @@ function Misc.PoliceLevelStep(step)
 end
 
 function Misc.DisablePolice(disabled)
-    local ps = Game.GetPlayer():GetPreventionSystem()
+    local player = Game.GetPlayer()
+    if player == nil then
+        print("[SimpleMenu] DisablePolice: player not available")
+        return
+    end
+    local ps = player:GetPreventionSystem()
+    if ps == nil then
+        print("[SimpleMenu] DisablePolice: PreventionSystem not available")
+        return
+    end
     local toggle = TogglePreventionSystem.new()
     toggle.sourceName = CName.new('SMDisablePolice')
     toggle.isActive = not disabled
     ps:QueueRequest(toggle)
-    ps:TogglePreventionSystem(not disabled)
+    -- Belt-and-suspenders: also call the direct toggle. The maintained
+    -- upstream mod keeps both, so we do too for maximum cross-version
+    -- compatibility (some patch levels only honour one of the two paths).
+    local okDirect = pcall(function() ps:TogglePreventionSystem(not disabled) end)
+    if not okDirect then
+        DEBUG_printl(LOG_LEVEL.Info, "DisablePolice: direct TogglePreventionSystem call failed (queued request still sent)")
+    end
 end
 
 function Misc.PoliceToggle()
@@ -230,9 +293,28 @@ end
 
 function Misc.FixCar()
     local player = Game.GetPlayer()
+    if player == nil then
+        print("[SimpleMenu] FixCar: player not available")
+        return
+    end
     local tgt = Game.GetTargetingSystem()
+    if tgt == nil then
+        print("[SimpleMenu] FixCar: targeting system not available")
+        return
+    end
     local veh = tgt:GetLookAtObject(player)
-    if (veh:IsExactlyA("vehicleCarBaseObject") or veh:IsExactlyA("vehicleBikeBaseObject")) and veh:IsPlayerVehicle() then
+    if veh == nil then
+        print("[SimpleMenu] FixCar: no vehicle under crosshair")
+        return
+    end
+    local isCar = false
+    local isBike = false
+    local okCar = pcall(function() return veh:IsExactlyA("vehicleCarBaseObject") end)
+    if okCar then isCar = veh:IsExactlyA("vehicleCarBaseObject") end
+    local okBike = pcall(function() return veh:IsExactlyA("vehicleBikeBaseObject") end)
+    if okBike then isBike = veh:IsExactlyA("vehicleBikeBaseObject") end
+
+    if (isCar or isBike) and veh:IsPlayerVehicle() then
         local vcc = veh:GetVehicleComponent()
         local qsm = player:GetQuickSlotsManager()
         local vss = Game.GetVehicleSystem()
@@ -257,7 +339,11 @@ function Misc.FixCar()
             if not Travel.instantSpawn then vss:ToggleSummonMode() end
             vps:ForcePersistentStateChanged()
             vcs:SetState(vehicleEState.Default)
+        else
+            print("[SimpleMenu] FixCar: vehicle not found in unlocked player vehicles")
         end
+    else
+        print("[SimpleMenu] FixCar: target is not a player vehicle")
     end
 end
 
