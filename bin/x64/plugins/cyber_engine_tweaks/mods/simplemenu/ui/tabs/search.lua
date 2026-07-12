@@ -9,12 +9,14 @@ local UIsearch = {
     currentItemAddDesc = "",
     itemTypes = {},
     rawItemTypes = {},
-    -- visibleTypes / visibleRawTypes are the subset of itemTypes / rawItemTypes
-    -- that are valid for the currently selected category. When "(All)" category
-    -- is selected they contain every type; when a specific category is selected
-    -- they contain only types that have at least one item in that category.
-    visibleTypes = {},
-    visibleRawTypes = {},
+    -- visibleTypeEntries is a single array of {str, raw} pairs for the types
+    -- that are valid for the currently selected category. Using one array of
+    -- pairs (instead of two parallel arrays) eliminates any possibility of
+    -- the display name and raw type string drifting out of alignment.
+    -- When "(All)" category is selected it contains every type; when a specific
+    -- category is selected it contains only types that have at least one item
+    -- in that category.
+    visibleTypeEntries = {},
     -- catToTypes maps a category string (e.g. "Weapon", "WeaponMod") to an array
     -- of indices into itemTypes / rawItemTypes. Built lazily after item indexing.
     catToTypes = {},
@@ -107,12 +109,12 @@ function UIsearch.Populate()
         UIsearch.rawItemTypes[i] = tempItems[i].raw
     end
 
-    -- Initialize visible type lists to the full lists (default category is "(All)")
-    UIsearch.visibleTypes = {}
-    UIsearch.visibleRawTypes = {}
+    -- Initialize visible type list to the full list (default category is "(All)")
+    -- Each entry is a {str, raw} pair so the display name and raw type string
+    -- can never drift apart.
+    UIsearch.visibleTypeEntries = {}
     for i = 1, #UIsearch.itemTypes do
-        UIsearch.visibleTypes[i] = UIsearch.itemTypes[i]
-        UIsearch.visibleRawTypes[i] = UIsearch.rawItemTypes[i]
+        UIsearch.visibleTypeEntries[i] = { str = UIsearch.itemTypes[i], raw = UIsearch.rawItemTypes[i] }
         UIsearch.typeListItems[i] = false
     end
 
@@ -133,9 +135,12 @@ function UIsearch.BuildTypeMap()
     if UIsearch.typeMapBuilt then return end
     if UIsearch.Items == nil or #UIsearch.Items.records == 0 then return end
 
-    -- Reverse lookup: raw type string -> index in rawItemTypes
+    -- Reverse lookup: raw type string -> index in itemTypes.
+    -- We iterate using #itemTypes (NOT #rawItemTypes) because rawItemTypes[1]
+    -- is nil (the "(All)" entry has no raw type), which makes Lua's # operator
+    -- on rawItemTypes return an undefined value.
     local rawTypeToIndex = {}
-    for i = 2, #UIsearch.rawItemTypes do
+    for i = 2, #UIsearch.itemTypes do
         rawTypeToIndex[UIsearch.rawItemTypes[i]] = i
     end
 
@@ -178,17 +183,17 @@ end
 ---category is selected, only types that have at least one item in that
 ---category are shown.
 function UIsearch.UpdateVisibleTypes()
-    UIsearch.visibleTypes = {}
-    UIsearch.visibleRawTypes = {}
+    UIsearch.visibleTypeEntries = {}
     -- Always include "(All)" at index 1
-    UIsearch.visibleTypes[1] = UIsearch.itemTypes[1]
-    UIsearch.visibleRawTypes[1] = UIsearch.rawItemTypes[1]
+    UIsearch.visibleTypeEntries[1] = { str = UIsearch.itemTypes[1], raw = UIsearch.rawItemTypes[1] }
 
     if UIsearch.currentCat == 0 or UIsearch.currentCat == 1 then
         -- "(All)" category: show every type
         for i = 2, #UIsearch.itemTypes do
-            UIsearch.visibleTypes[#UIsearch.visibleTypes + 1] = UIsearch.itemTypes[i]
-            UIsearch.visibleRawTypes[#UIsearch.visibleRawTypes + 1] = UIsearch.rawItemTypes[i]
+            UIsearch.visibleTypeEntries[#UIsearch.visibleTypeEntries + 1] = {
+                str = UIsearch.itemTypes[i],
+                raw = UIsearch.rawItemTypes[i]
+            }
         end
     else
         -- Specific category: only types that exist in that category
@@ -196,8 +201,10 @@ function UIsearch.UpdateVisibleTypes()
         local typeIndices = UIsearch.catToTypes[catStr]
         if typeIndices ~= nil then
             for _, idx in ipairs(typeIndices) do
-                UIsearch.visibleTypes[#UIsearch.visibleTypes + 1] = UIsearch.itemTypes[idx]
-                UIsearch.visibleRawTypes[#UIsearch.visibleRawTypes + 1] = UIsearch.rawItemTypes[idx]
+                UIsearch.visibleTypeEntries[#UIsearch.visibleTypeEntries + 1] = {
+                    str = UIsearch.itemTypes[idx],
+                    raw = UIsearch.rawItemTypes[idx]
+                }
             end
         end
     end
@@ -222,9 +229,9 @@ end
 function UIsearch.TypeList(_)
     local width = ImGui.GetWindowContentRegionWidth()
     if ImGui.BeginListBox("itemTypes", width, 300) then
-        for i = 1, #UIsearch.visibleTypes do
+        for i = 1, #UIsearch.visibleTypeEntries do
             UIsearch.typeListItems[i] = ImGui.Selectable(
-                UIsearch.visibleTypes[i].."##itemType"..i,
+                UIsearch.visibleTypeEntries[i].str.."##itemType"..i,
                 UIsearch.typeListItems[i] or false,
                 ImGuiSelectableFlags.None,
                 width, listTextHeight
@@ -395,7 +402,7 @@ function UIsearch.TabSearch()
             UIsearch.UpdateVisibleTypes()
             UIsearch.currentType = 1
             UIsearch.typeListItems = {}
-            for i = 1, #UIsearch.visibleTypes do
+            for i = 1, #UIsearch.visibleTypeEntries do
                 UIsearch.typeListItems[i] = (i == 1)
             end
         end
@@ -436,7 +443,7 @@ function UIsearch.TabSearch()
             UIsearch.UpdateVisibleTypes()
             UIsearch.currentType = 1
             UIsearch.typeListItems = {}
-            for i = 1, #UIsearch.visibleTypes do
+            for i = 1, #UIsearch.visibleTypeEntries do
                 UIsearch.typeListItems[i] = (i == 1)
             end
             -- Force a re-search with the new category and "(All)" type
@@ -488,10 +495,17 @@ function UIsearch.TabSearch()
                 UIsearch.searchResult = {}
             else
                 UIsearch.threeChars = false
+                -- Look up the raw type string from the SINGLE visibleTypeEntries
+                -- array (a list of {str, raw} pairs). This guarantees the display
+                -- name the user clicked and the raw type string passed to the
+                -- search filter come from the exact same entry — they can never
+                -- drift apart.
+                local selEntry = UIsearch.visibleTypeEntries[UIsearch.currentType]
+                local selRawType = selEntry and selEntry.raw or nil
                 UIsearch.searchResult = ItemRecord.Search(
                     UIsearch.Items.records --[=[@as ItemRecord[]]=],
                     UIsearch.searchText,
-                    { i = UIsearch.currentType, s = UIsearch.visibleRawTypes[UIsearch.currentType] },
+                    { i = UIsearch.currentType, s = selRawType },
                     { i = UIsearch.currentCat, s = UIsearch.itemCats[UIsearch.currentCat]:gsub(" ", "") },
                     UIsearch.currentTier,
                     UIsearch.iconicFilter
