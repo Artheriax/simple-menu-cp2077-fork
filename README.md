@@ -57,12 +57,10 @@ This fork:
 | Component | Minimum version | Recommended | Why |
 |---|---|---|---|
 | **Cyberpunk 2077** | 2.21 | **2.31** | This fork is built and tested against 2.31. The codebase already supports 2.0 → 2.31, but 2.31 is the recommended target. |
-| **Cyber Engine Tweaks (CET)** | 1.34.0 | **1.37.1** | CET 1.37.1 is the latest release that supports Cyberpunk 2.31. Older versions will not load on 2.31. [Download from GitHub](https://github.com/maximegmd/CyberEngineTweaks/releases). |
-| **RED4ext** | 2.2.0 | **2.31-compatible build** | Required by CET 1.37.x. [Download from GitHub](https://github.com/WopsS/RED4ext/releases). |
+| **Cyber Engine Tweaks (CET)** | 1.34.0 | **1.37.1** | CET 1.37.1 is the latest release that supports Cyberpunk 2.31. Older versions will not load on 2.31. |
+| **RED4ext** | 2.2.0 | **2.31-compatible build** | Required by CET 1.37.x. |
 | **TweakXL** (optional) | 1.7.0+ | latest | Only required if you use TweakXL-dependent mods alongside Simple Menu. |
 | **ArchiveXL** (optional) | 1.7.0+ | latest | Only required if you use ArchiveXL-dependent mods alongside Simple Menu. |
-
-> **Note:** The canonical CET repository has moved from `yamashi/CyberEngineTweaks` to **`maximegmd/CyberEngineTweaks`**. The old URL redirects, but please update any bookmarks.
 
 ---
 
@@ -70,13 +68,14 @@ This fork:
 
 ### Fresh install
 
-1. Install **Cyber Engine Tweaks 1.37.1** (or newer) by extracting its `bin/` folder into your Cyberpunk 2077 install directory. ([CET releases](https://github.com/maximegmd/CyberEngineTweaks/releases))
-2. Install **RED4ext** (the build matching your game version). ([RED4ext releases](https://github.com/WopsS/RED4ext/releases))
+1. Install **Cyber Engine Tweaks 1.37.1** (or newer) by extracting its `bin/` folder into your Cyberpunk 2077 install directory.
+2. Install **RED4ext** (the build matching your game version).
 3. Download this fork (clone the repo or grab a release `.zip`).
 4. Copy the `bin/` folder from this repo into your Cyberpunk 2077 install directory. The final path should look like:
    ```
    <Cyberpunk 2077>/bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/init.lua
    ```
+   (or simply drag it into vortex)
 5. Launch the game. Once you load a save (or start a new game), open the CET overlay (default: the grave accent / backtick key `` ` ``) and the Simple Menu window will appear. You can also bind a hotkey to toggle the menu in *Settings → Key Bindings → Mods*.
 
 ### Updating from the upstream Simple Menu
