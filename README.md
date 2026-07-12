@@ -50,10 +50,6 @@ This fork:
 - **Non-destructive config migration.** The previous behaviour wiped the entire user config whenever the mod's internal version number changed — losing all hotkeys, saved teleport positions, and toggle states. The new `mergeDefaults` function recursively merges new default keys into the existing config, preserving every user preference that still has a corresponding default. The config version has been bumped to `52`.
 - **`Util.ResetConfig` no longer corrupts the defaults table.** Previously it did `Util.configuration = Util.configurationDefault` (a direct reference), so any later mutation of the user's config would silently mutate the defaults that future fresh installs would inherit. It now uses a proper deep copy.
 
-### Project hygiene
-- Added a `.gitignore` so user-generated config files (`config.json`, `quickTele.json`, `lang.json`) and runtime logs are no longer accidentally committed.
-- Updated the header comment in `init.lua` to credit both the original creator (Dank Rafft), the upstream maintainer (capncoolio2), and this fork.
-
 ---
 
 ## Requirements
