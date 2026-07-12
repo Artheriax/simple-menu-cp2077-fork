@@ -15,10 +15,10 @@ This fork is a derivative work and would not exist without the work of the peopl
 
 | Role | Person | Link |
 |---|---|---|
-| Original creator / original author of Simple Menu | **Dank Rafft** | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/4334902) |
-| Current upstream maintainer (2.0+ / Phantom Liberty / 2.3 / 2.31 ports) | **capncoolio2** | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/78694482) |
+| Original creator / original author of Simple Menu | **Dank Rafft** | [Nexus profile](https://www.nexusmods.com/profile/DankRafft) |
+| Current upstream maintainer (2.0+ / Phantom Liberty / 2.3 / 2.31 ports) | **capncoolio2** | [Nexus profile](https://www.nexusmods.com/profile/capncoolio2) |
 | Original Nexus mod page | Dank Rafft (with capncoolio2 credited as maintainer) | https://www.nexusmods.com/cyberpunk2077/mods/818 |
-| Breach Protocol tab | Corvellt | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/20850139) |
+| Breach Protocol tab | Corvellt | [Nexus profile](https://www.nexusmods.com/profile/Corvellt) |
 | Original Infinite Ammo script | TheBs65422 | — |
 | Original item upgrade script | Expired | — |
 | `cp2077-cet-kit` (Cron / GameSession / GameHUD) | psiberx | [github.com/psiberx/cp2077-cet-kit](https://github.com/psiberx/cp2077-cet-kit) (MIT) |
