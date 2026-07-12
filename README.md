@@ -38,6 +38,7 @@ This fork:
 - **`PostLoadActions` hardened** — guards against `Game.GetPlayer()` being briefly nil during hot-reloads, and wraps `RefreshCraftBookMenu` / `DisablePolice` in `pcall` so a failure in one subsystem no longer blocks the others.
 
 ### Bug fixes
+- **Search tab: Type list now filters by selected Category.** Previously, selecting a category like "Weapon" still showed every item type in the Type listbox (including irrelevant ones like "Tarot Card" or "Crafting Spec"). The type list now dynamically rebuilds to show only types that actually have at least one item in the selected category. Switching back to "(All)" restores the full type list. The type selection resets to "(All)" whenever the category changes.
 - **`Misc.ChangeFact` no longer double-prints.** Previously, setting a Romance fact (category 3) printed both *"Romance quest fact …"* and *"Quest fact …"* because the early-return was missing. The fact was also written twice. Now it prints exactly once.
 - **`ItemRecord:GetQuality` logic corrected.** The ternary used `or` where it should have used `and` — `nil or X` always returns `X`, so the function always returned the quality name even when it was empty. Now correctly returns `nil` for empty quality strings (so the search UI shows `--` instead of a blank cell).
 - **`Items.GetFilteredRecords` dead code removed.** The `return result` line referenced a `result` variable that was never assigned — it silently returned `nil`. Now the function correctly documents that results are written into the `outRecordList` argument (passed by reference), matching actual behaviour.
@@ -237,6 +238,7 @@ The research that informed this fork's compatibility work (verified against Nati
 - **Compatibility:** bundled `Cron.lua` updated 1.0.2 → 1.0.3 (timer execution order fix).
 - **Compatibility:** `pcall` protection added to `Misc.DisablePolice` direct-toggle call, `Misc.UnlockAchieve`, `Misc.FixCar` `IsExactlyA` calls, `ItemRecord:new` quality lookup, `PostLoadActions` `RefreshCraftBookMenu` and `DisablePolice` calls.
 - **Compatibility:** nil guards added to `Misc.PoliceLevel`, `Misc.PoliceLevelStep`, `Misc.DisablePolice`, `Misc.Kill`, `Misc.FixCar`, `Misc.EndQuest`, `Items.AddItem`, `PostLoadActions`.
+- **Bug fix:** Search tab — Type listbox now dynamically filters to show only types that exist in the selected Category (e.g. selecting "Weapon" hides "Tarot Card", "Crafting Spec", etc.). Switching back to "(All)" restores the full list. Type selection resets to "(All)" on category change.
 - **Bug fix:** `Misc.ChangeFact` no longer prints/double-writes for romance facts (category 3).
 - **Bug fix:** `ItemRecord:GetQuality` `or` → `and` (was always returning the quality name).
 - **Bug fix:** `Items.GetFilteredRecords` dead `return result` removed.

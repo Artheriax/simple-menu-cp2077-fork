@@ -9,6 +9,16 @@ local UIsearch = {
     currentItemAddDesc = "",
     itemTypes = {},
     rawItemTypes = {},
+    -- visibleTypes / visibleRawTypes are the subset of itemTypes / rawItemTypes
+    -- that are valid for the currently selected category. When "(All)" category
+    -- is selected they contain every type; when a specific category is selected
+    -- they contain only types that have at least one item in that category.
+    visibleTypes = {},
+    visibleRawTypes = {},
+    -- catToTypes maps a category string (e.g. "Weapon", "WeaponMod") to an array
+    -- of indices into itemTypes / rawItemTypes. Built lazily after item indexing.
+    catToTypes = {},
+    typeMapBuilt = false,
     itemCats = {},
     typeListItems = {},
     catListItems = {},
@@ -97,7 +107,12 @@ function UIsearch.Populate()
         UIsearch.rawItemTypes[i] = tempItems[i].raw
     end
 
+    -- Initialize visible type lists to the full lists (default category is "(All)")
+    UIsearch.visibleTypes = {}
+    UIsearch.visibleRawTypes = {}
     for i = 1, #UIsearch.itemTypes do
+        UIsearch.visibleTypes[i] = UIsearch.itemTypes[i]
+        UIsearch.visibleRawTypes[i] = UIsearch.rawItemTypes[i]
         UIsearch.typeListItems[i] = false
     end
 
@@ -109,6 +124,83 @@ function UIsearch.Populate()
     --Select (All) type/category by default
     UIsearch.typeListItems[1] = true
     UIsearch.catListItems[1] = true
+end
+
+---Build a map from category string to the set of type indices that exist in that
+---category, based on the actual loaded ItemRecords. Called lazily after item
+---indexing completes. Idempotent — safe to call every frame.
+function UIsearch.BuildTypeMap()
+    if UIsearch.typeMapBuilt then return end
+    if UIsearch.Items == nil or #UIsearch.Items.records == 0 then return end
+
+    -- Reverse lookup: raw type string -> index in rawItemTypes
+    local rawTypeToIndex = {}
+    for i = 2, #UIsearch.rawItemTypes do
+        rawTypeToIndex[UIsearch.rawItemTypes[i]] = i
+    end
+
+    UIsearch.catToTypes = {}
+    local seen = {}  -- catStr -> set of typeIdx (for dedup)
+
+    for _, rec in ipairs(UIsearch.Items.records) do
+        local catStr = rec.Category or ""
+        if catStr ~= "" then
+            local ok, rawType = pcall(function() return rec.Record:ItemType():Name().value end)
+            if ok and rawType ~= nil then
+                local typeIdx = rawTypeToIndex[rawType]
+                if typeIdx ~= nil then
+                    if seen[catStr] == nil then seen[catStr] = {} end
+                    if not seen[catStr][typeIdx] then
+                        seen[catStr][typeIdx] = true
+                        if UIsearch.catToTypes[catStr] == nil then
+                            UIsearch.catToTypes[catStr] = {}
+                        end
+                        table.insert(UIsearch.catToTypes[catStr], typeIdx)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Sort each category's type indices numerically so the visible list stays
+    -- alphabetical (the master itemTypes array is already sorted by display
+    -- name, and sorting by index preserves that order).
+    for _, indices in pairs(UIsearch.catToTypes) do
+        table.sort(indices)
+    end
+
+    UIsearch.typeMapBuilt = true
+    DEBUG_printl(LOG_LEVEL.Info, "Search: category-to-type map built for", #UIsearch.catToTypes, "categories")
+end
+
+---Rebuild the visible type list based on the currently selected category.
+---When "(All)" is selected (index 1), all types are shown. When a specific
+---category is selected, only types that have at least one item in that
+---category are shown.
+function UIsearch.UpdateVisibleTypes()
+    UIsearch.visibleTypes = {}
+    UIsearch.visibleRawTypes = {}
+    -- Always include "(All)" at index 1
+    UIsearch.visibleTypes[1] = UIsearch.itemTypes[1]
+    UIsearch.visibleRawTypes[1] = UIsearch.rawItemTypes[1]
+
+    if UIsearch.currentCat == 0 or UIsearch.currentCat == 1 then
+        -- "(All)" category: show every type
+        for i = 2, #UIsearch.itemTypes do
+            UIsearch.visibleTypes[#UIsearch.visibleTypes + 1] = UIsearch.itemTypes[i]
+            UIsearch.visibleRawTypes[#UIsearch.visibleRawTypes + 1] = UIsearch.rawItemTypes[i]
+        end
+    else
+        -- Specific category: only types that exist in that category
+        local catStr = UIsearch.itemCats[UIsearch.currentCat]:gsub(" ", "")
+        local typeIndices = UIsearch.catToTypes[catStr]
+        if typeIndices ~= nil then
+            for _, idx in ipairs(typeIndices) do
+                UIsearch.visibleTypes[#UIsearch.visibleTypes + 1] = UIsearch.itemTypes[idx]
+                UIsearch.visibleRawTypes[#UIsearch.visibleRawTypes + 1] = UIsearch.rawItemTypes[idx]
+            end
+        end
+    end
 end
 
 function UIsearch.CategoryList(_)
@@ -130,10 +222,10 @@ end
 function UIsearch.TypeList(_)
     local width = ImGui.GetWindowContentRegionWidth()
     if ImGui.BeginListBox("itemTypes", width, 300) then
-        for i = 1, #UIsearch.itemTypes do
+        for i = 1, #UIsearch.visibleTypes do
             UIsearch.typeListItems[i] = ImGui.Selectable(
-                UIsearch.itemTypes[i].."##itemType"..i,
-                UIsearch.typeListItems[i],
+                UIsearch.visibleTypes[i].."##itemType"..i,
+                UIsearch.typeListItems[i] or false,
                 ImGuiSelectableFlags.None,
                 width, listTextHeight
             )
@@ -294,6 +386,20 @@ function UIsearch.TabSearch()
         local tFlags = bit32.bor(ImGuiInputTextFlags.CtrlEnterForNewLine)
         local listItemClicked = false
 
+        -- Build the category-to-type map (idempotent; runs once after items are loaded).
+        -- If this is the first time the map was built and a specific category is
+        -- already selected, rebuild the visible type list to apply the filter.
+        local mapWasBuilt = not UIsearch.typeMapBuilt
+        UIsearch.BuildTypeMap()
+        if mapWasBuilt and UIsearch.typeMapBuilt and UIsearch.currentCat > 1 then
+            UIsearch.UpdateVisibleTypes()
+            UIsearch.currentType = 1
+            UIsearch.typeListItems = {}
+            for i = 1, #UIsearch.visibleTypes do
+                UIsearch.typeListItems[i] = (i == 1)
+            end
+        end
+
         Elem.SectionHeading(UILabels.search.sNHeading, Colour.Info, false)
         local sTextChanged
         UIsearch.searchText, sTextChanged = ImGui.InputTextMultiline("searchTextInput", UIsearch.searchText, 32, width, 40, tFlags)
@@ -307,6 +413,8 @@ function UIsearch.TabSearch()
             UIsearch.catsOpen
         )
 
+        local prevCat = UIsearch.currentCat
+
         for i = 1, #UIsearch.catListItems do
             if UIsearch.catListItems[i] then
                 if UIsearch.currentCat == 0 then
@@ -318,6 +426,21 @@ function UIsearch.TabSearch()
                     listItemClicked = true
                 end
             end
+        end
+
+        -- If the category changed, rebuild the visible type list so only types
+        -- that actually exist in the selected category are shown, and reset the
+        -- type selection to "(All)". This fixes the issue where selecting
+        -- "Weapon" would still show irrelevant types like "Tarot Card".
+        if prevCat ~= UIsearch.currentCat and UIsearch.currentCat ~= 0 then
+            UIsearch.UpdateVisibleTypes()
+            UIsearch.currentType = 1
+            UIsearch.typeListItems = {}
+            for i = 1, #UIsearch.visibleTypes do
+                UIsearch.typeListItems[i] = (i == 1)
+            end
+            -- Force a re-search with the new category and "(All)" type
+            listItemClicked = true
         end
 
         Elem.Separator()
@@ -368,7 +491,7 @@ function UIsearch.TabSearch()
                 UIsearch.searchResult = ItemRecord.Search(
                     UIsearch.Items.records --[=[@as ItemRecord[]]=],
                     UIsearch.searchText,
-                    { i = UIsearch.currentType, s = UIsearch.rawItemTypes[UIsearch.currentType] },
+                    { i = UIsearch.currentType, s = UIsearch.visibleRawTypes[UIsearch.currentType] },
                     { i = UIsearch.currentCat, s = UIsearch.itemCats[UIsearch.currentCat]:gsub(" ", "") },
                     UIsearch.currentTier,
                     UIsearch.iconicFilter
