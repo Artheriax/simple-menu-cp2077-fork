@@ -11,7 +11,21 @@ local UIitems = {
     upgradetype = 0,
     upgrademode = 0,
     modupgradetype = 0,
-    modupgradequality = 0
+    modupgradequality = 0,
+    -- "Remove Duplicates" feature: per-category checkbox state.
+    -- Initialized lazily on first render of the equipment section.
+    dupeCats = {},
+    dupeCatsInitialized = false,
+    dupeResultText = "",
+    dupeResultColour = nil,
+    -- Match options — control which properties must match for two items to be
+    -- considered duplicates. All default to true (strict matching). Unchecking
+    -- one loosens the matching for that property.
+    dupeMatchQuality = true,
+    dupeMatchLevel = true,
+    dupeMatchMods = true,
+    -- Which duplicate to keep: 0 = first found, 1 = highest quality, 2 = lowest quality
+    dupeKeepMode = 1
 }
 
 local itemcategorykeylist = {
@@ -365,6 +379,125 @@ function UIitems.MenuEquipment()
         UIitems.Upgrade.UpgradeAll,
         UIitems.modupgradequality
     )
+
+    -- Remove Duplicates section
+    UIitems.Elements.SectionHeading(UILabels.items.equipment.tRemoveDupes, Colour.Warning)
+    UIitems.Elements.QuickTooltip(UILabels.items.equipment.tRemoveDupesDesc, Colour.Info)
+
+    -- Lazily initialise the per-category checkbox state on first render
+    if not UIitems.dupeCatsInitialized then
+        local cats = UIitems.Upgrade.GetDupeCategories and UIitems.Upgrade.GetDupeCategories() or {}
+        for _, cat in ipairs(cats) do
+            UIitems.dupeCats[cat] = false
+        end
+        UIitems.dupeCatsInitialized = true
+    end
+
+    -- "Select All" / "Deselect All" convenience buttons
+    local catOrder = UIitems.Upgrade.GetDupeCategories and UIitems.Upgrade.GetDupeCategories() or {}
+    if (ImGui.Button(UILabels.items.equipment.bSelectAllDupes.."##dupeSelAll")) then
+        for _, cat in ipairs(catOrder) do
+            UIitems.dupeCats[cat] = true
+        end
+    end
+    ImGui.SameLine()
+    if (ImGui.Button(UILabels.items.equipment.bDeselectAllDupes.."##dupeDeselAll")) then
+        for _, cat in ipairs(catOrder) do
+            UIitems.dupeCats[cat] = false
+        end
+    end
+    if (ImGui.IsItemHovered()) then
+        ImGui.SetTooltip(UILabels.items.equipment.tRemoveDupesDesc)
+    end
+
+    -- Render a compact grid of category checkboxes (2 per row to fit the narrow menu)
+    local catLabels = {
+        Weapons     = UILabels.items.equipment.catWeapons,
+        Clothing    = UILabels.items.equipment.catClothing,
+        Cyberware   = UILabels.items.equipment.catCyberware,
+        Consumables = UILabels.items.equipment.catConsumables,
+        Materials   = UILabels.items.equipment.catMaterials,
+        Grenades    = UILabels.items.equipment.catGrenades,
+        Junk        = UILabels.items.equipment.catJunk,
+        Mods        = UILabels.items.equipment.catMods
+    }
+    for i, cat in ipairs(catOrder) do
+        local changed, newVal
+        UIitems.dupeCats[cat], changed = ImGui.Checkbox(catLabels[cat].."##dupeCat"..cat, UIitems.dupeCats[cat] or false)
+        -- Two checkboxes per row
+        if i % 2 == 1 and i < #catOrder then
+            ImGui.SameLine()
+        end
+    end
+
+    ImGui.Spacing()
+
+    -- Match options: control which properties must match for two items to be
+    -- considered duplicates. All default to true (strict matching). Unchecking
+    -- one loosens the matching — e.g. uncheck "Match item level" to treat a
+    -- level-10 DR5 Nova and a level-50 DR5 Nova as duplicates.
+    UIitems.Elements.Text(UILabels.items.equipment.tMatchOptions, true, true, Colour.Disabled, 1)
+
+    UIitems.dupeMatchQuality, _ = ImGui.Checkbox(UILabels.items.equipment.bMatchQuality.."##dupeMatchQ", UIitems.dupeMatchQuality)
+    if (ImGui.IsItemHovered()) then
+        ImGui.SetTooltip(UILabels.items.equipment.tMatchQuality)
+    end
+    ImGui.SameLine()
+    UIitems.dupeMatchLevel, _ = ImGui.Checkbox(UILabels.items.equipment.bMatchLevel.."##dupeMatchL", UIitems.dupeMatchLevel)
+    if (ImGui.IsItemHovered()) then
+        ImGui.SetTooltip(UILabels.items.equipment.tMatchLevel)
+    end
+    ImGui.SameLine()
+    UIitems.dupeMatchMods, _ = ImGui.Checkbox(UILabels.items.equipment.bMatchMods.."##dupeMatchM", UIitems.dupeMatchMods)
+    if (ImGui.IsItemHovered()) then
+        ImGui.SetTooltip(UILabels.items.equipment.tMatchMods)
+    end
+
+    ImGui.Spacing()
+
+    -- "Keep which" dropdown — lets the user choose which duplicate to keep
+    -- when multiple matches are found. Equipped items are ALWAYS kept
+    -- regardless of this setting.
+    local keepOptions = {
+        [0] = UILabels.items.equipment.bKeepFirst,
+        [1] = UILabels.items.equipment.bKeepHighest,
+        [2] = UILabels.items.equipment.bKeepLowest
+    }
+    local keepOptionsArr = { keepOptions[0], keepOptions[1], keepOptions[2] }
+    ImGui.AlignTextToFramePadding()
+    ImGui.Text(UILabels.items.equipment.tKeepWhich)
+    ImGui.SameLine()
+    UIitems.dupeKeepMode, _ = ImGui.Combo("##dupeKeepMode", UIitems.dupeKeepMode, keepOptionsArr, #keepOptionsArr)
+    -- Tooltip shows the description for the currently-selected option
+    local keepTooltips = {
+        [0] = UILabels.items.equipment.tKeepFirst,
+        [1] = UILabels.items.equipment.tKeepHighest,
+        [2] = UILabels.items.equipment.tKeepLowest
+    }
+    if (ImGui.IsItemHovered()) then
+        ImGui.SetTooltip(keepTooltips[UIitems.dupeKeepMode] or "")
+    end
+
+    ImGui.Spacing()
+
+    -- "Remove Duplicates" button — disabled while in a menu or not in-game
+    ImGui.BeginDisabled(not GameState.isLoaded)
+    if (ImGui.Button(UILabels.items.equipment.bRemoveDupes)) then
+        local matchOptions = {
+            quality = UIitems.dupeMatchQuality,
+            level   = UIitems.dupeMatchLevel,
+            mods    = UIitems.dupeMatchMods
+        }
+        local removed = UIitems.Upgrade.RemoveDuplicates(UIitems.dupeCats, matchOptions, UIitems.dupeKeepMode)
+        UIitems.dupeResultText = UILabels.items.equipment.tRemoveDupesResult:gsub("{#}", tostring(removed))
+        UIitems.dupeResultColour = (removed > 0) and Colour.Positive or Colour.Info
+    end
+    ImGui.EndDisabled()
+
+    -- Show the result of the last run (persists until the user runs it again)
+    if UIitems.dupeResultText ~= "" and UIitems.dupeResultColour ~= nil then
+        UIitems.Elements.Text(UIitems.dupeResultText, true, true, UIitems.dupeResultColour, 1)
+    end
 end
 
 return UIitems

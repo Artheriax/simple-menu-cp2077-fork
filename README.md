@@ -39,6 +39,8 @@ This fork:
 
 ### Bug fixes
 - **Search tab: Type list now filters by selected Category.** Previously, selecting a category like "Weapon" still showed every item type in the Type listbox (including irrelevant ones like "Tarot Card" or "Crafting Spec"). The type list now dynamically rebuilds to show only types that actually have at least one item in the selected category. Switching back to "(All)" restores the full type list. The type selection resets to "(All)" whenever the category changes.
+- **Search tab: Type filter no longer shows wrong items.** Clicking "Precision Rifle" used to show revolvers. Fixed by replacing the two parallel display/raw arrays with a single array of `{str, raw}` pairs so they can never drift out of alignment.
+- **Vehicle list no longer shows invalid/unnamed vehicles.** `Items.RefreshPlayerVehicles` now validates each vehicle's `DisplayName` (same `hasName` pattern as the search tab) and filters out test/debug vehicles with empty names.
 - **`Misc.ChangeFact` no longer double-prints.** Previously, setting a Romance fact (category 3) printed both *"Romance quest fact …"* and *"Quest fact …"* because the early-return was missing. The fact was also written twice. Now it prints exactly once.
 - **`ItemRecord:GetQuality` logic corrected.** The ternary used `or` where it should have used `and` — `nil or X` always returns `X`, so the function always returned the quality name even when it was empty. Now correctly returns `nil` for empty quality strings (so the search UI shows `--` instead of a blank cell).
 - **`Items.GetFilteredRecords` dead code removed.** The `return result` line referenced a `result` variable that was never assigned — it silently returned `nil`. Now the function correctly documents that results are written into the `outRecordList` argument (passed by reference), matching actual behaviour.
@@ -46,9 +48,16 @@ This fork:
 - **`Misc.EndQuest` no longer crashes when there's no tracked quest.** Adds nil guards at every step of the `GetTrackedEntry → GetParentEntry → GetParentEntry → GetEntryHash → ChangeEntryStateByHash` chain.
 - **`Misc.FixCar` no longer crashes when not looking at a vehicle.** Adds nil guards for `Game.GetPlayer()`, `Game.GetTargetingSystem()`, the look-at object, and the `IsExactlyA` calls (wrapped in `pcall` for safety against modded vehicle classes).
 
+### New features
+- **Remove Duplicates (Equipment section).** A powerful inventory cleanup tool with configurable matching and keep-mode logic. See the [Remove Duplicates](#remove-duplicates) section below for full details. Per-category checkboxes (Weapons, Clothing, Cyberware, Consumables, Materials, Grenades, Junk, Mods), configurable match options (quality / item level / installed mods), and a keep-mode dropdown (first found / highest quality / lowest quality). Equipped and quest-tagged items are always kept.
+
 ### Config migration
 - **Non-destructive config migration.** The previous behaviour wiped the entire user config whenever the mod's internal version number changed — losing all hotkeys, saved teleport positions, and toggle states. The new `mergeDefaults` function recursively merges new default keys into the existing config, preserving every user preference that still has a corresponding default. The config version has been bumped to `52`.
 - **`Util.ResetConfig` no longer corrupts the defaults table.** Previously it did `Util.configuration = Util.configurationDefault` (a direct reference), so any later mutation of the user's config would silently mutate the defaults that future fresh installs would inherit. It now uses a proper deep copy.
+
+### Project hygiene
+- Added a `.gitignore` so user-generated config files (`config.json`, `quickTele.json`, `lang.json`) and runtime logs are no longer accidentally committed.
+- Updated the header comment in `init.lua` to credit both the original creator (Dank Rafft), the upstream maintainer (capncoolio2), and this fork.
 
 ---
 
@@ -75,7 +84,6 @@ This fork:
    ```
    <Cyberpunk 2077>/bin/x64/plugins/cyber_engine_tweaks/mods/simplemenu/init.lua
    ```
-   (or simply drag it into vortex)
 5. Launch the game. Once you load a save (or start a new game), open the CET overlay (default: the grave accent / backtick key `` ` ``) and the Simple Menu window will appear. You can also bind a hotkey to toggle the menu in *Settings → Key Bindings → Mods*.
 
 ### Updating from the upstream Simple Menu
@@ -95,7 +103,7 @@ This fork:
 
 Simple Menu is a one-stop cheat and exploration menu. Major features include:
 
-- **Items tab** — add any weapon, clothing, consumable, crafting material, grenade, cyberware, or junk item to your inventory; force any quality tier; upgrade all equipped gear in one click; remove quest tags from items; infinite ammo (magazine or inventory); super reload / accuracy / zoom / range; no recoil; "ultra kill" and "psycho mode" weapon cheats; smart-gun "big brain" targeting; tech-pierce "penetrator"; beast mode for melee; infinite melee combo.
+- **Items tab** — add any weapon, clothing, consumable, crafting material, grenade, cyberware, or junk item to your inventory; force any quality tier; upgrade all equipped gear in one click; remove quest tags from items; **Remove Duplicates** (see below); infinite ammo (magazine or inventory); super reload / accuracy / zoom / range; no recoil; "ultra kill" and "psycho mode" weapon cheats; smart-gun "big brain" targeting; tech-pierce "penetrator"; beast mode for melee; infinite melee combo.
 - **Player tab** — god mode; infinite stamina / oxygen; one-click max level / max attributes / max street cred; add attribute / perk / relic points; reset perks; modify individual stats (permanently or temporarily); toggle invisibility (with hostile-NPC pacification); 12 instant-cooldown cheats (heal item, grenade, projectile launcher, cloak, sandevistan, berserk, kerenzikov, overclock, quickhack cooldown, quickhack cost, memory regen, faceplate); infinite double jump; infinite air dash.
 - **Misc tab** — set / step wanted level; toggle the entire police system off; end the current tracked quest; untrack the current quest; unlock all achievements; kill the NPC under your crosshair; slow-motion (with separate global / player dilation sliders and a self-effect toggle); freeze game time; freeze vehicle mission timers; teleport to any apartment or to a saved custom position; quick-teleport to V's apartment / Viktor's clinic; "door buster" forward-jump teleport; repair your vehicle; unlock / lock any player vehicle; unlock all vehicles; toggle instant vehicle spawn.
 - **Search tab** — searchable index of every TweakDB item in the game (filtered by type, category, quality tier, and iconic flag). Add any item, in any quantity, at any forced quality tier. The indexer runs in the background and shows a progress bar on first load.
@@ -104,6 +112,78 @@ Simple Menu is a one-stop cheat and exploration menu. Major features include:
 - **Config tab** — per-menu visibility toggles; weapon-mod customisers (smart-gun reticle pitch/yaw, projectile velocity, lock range, max locks; psycho-mode projectile count and fire rate; super-zoom level); search loading-bar speed; debug / log level; popups on/off; auto-open with CET overlay.
 
 Most features have a hotkey (bindable in *Settings → Key Bindings → Mods*).
+
+---
+
+## Remove Duplicates
+
+Located in the **Items tab → Equipment Modification** section, this feature scans your inventory and removes duplicate items based on configurable matching criteria. It's useful for cleaning up inventories bloated with multiple copies of the same weapon, clothing, or consumable.
+
+### How to use it
+
+1. Open the **Items** tab and scroll to the **Equipment Modification** section.
+2. Scroll to the **Remove Duplicate Items** heading.
+3. **Select categories** — tick the checkboxes for the item categories you want to clean (Weapons, Clothing, Cyberware, Consumables, Materials, Grenades, Junk, Mods). Use the **All** / **None** buttons for quick selection.
+4. **Configure match options** (see below) — these control how strict the duplicate detection is.
+5. **Choose which copy to keep** — use the dropdown to pick the keep mode.
+6. Click **Remove Duplicates**. The result line shows how many items were removed, and the CET console logs each removed item by name.
+
+### Match options
+
+Three checkboxes control which properties must match for two items to be considered duplicates. All default to **on** (strict matching). Uncheck one to loosen the matching for that property.
+
+| Option | When checked (default) | When unchecked |
+|---|---|---|
+| **Match quality** | A Rare DR5 Nova and an Epic DR5 Nova are NOT duplicates | All qualities of the same item are duplicates |
+| **Match item level** | A level-10 DR5 Nova and a level-50 DR5 Nova are NOT duplicates | All item levels of the same item are duplicates |
+| **Match installed mods** | A DR5 Nova with a scope and one without are NOT duplicates | Modded and unmodded versions are duplicates |
+
+The **display name is always part of the key** — two items with different names are never considered duplicates.
+
+### Keep mode
+
+When duplicates are found, this dropdown controls which copy is kept:
+
+| Mode | Behavior |
+|---|---|
+| **Keep first found** | Keeps the first duplicate encountered. Fast but arbitrary. |
+| **Keep highest quality** (default) | Among duplicates, keeps the one with the highest quality tier (Legendary > Epic > Rare > Uncommon > Common). |
+| **Keep lowest quality** | Among duplicates, keeps the one with the lowest quality tier. Useful for downgrading. |
+
+### Safety guarantees
+
+The following items are **never removed**, regardless of settings:
+
+- **Equipped items** — checked via `EquipmentSystem:GetPlayerData():IsItemEquipped()`. This is a hard rule that overrides the keep mode. Even if "keep lowest quality" is selected and an equipped item is the lowest quality, it will NOT be removed.
+- **Quest-tagged items** — items with the `Quest` tag (e.g. Johnny's clothing) are always kept.
+
+If an equipped item is in a duplicate group, it's kept AND the keep mode still picks one non-equipped item to keep. So if you have 3 duplicate pistols (one equipped Epic, one non-equipped Legendary, one non-equipped Common) and select "Keep highest quality": the equipped Epic is kept (hard rule), the Legendary is kept (highest quality among non-equipped), and the Common is removed.
+
+### How deduplication works
+
+Instead of matching by TweakDBID (which differs for craftable vs. preset vs. iconic variants of the same weapon), the feature builds a **composite key** from the item's functional properties:
+
+1. **Display name** (always included) — e.g. "DR5 Nova", "Death and Taxes"
+2. **Quality level** (if "Match quality" is on) — numeric stat value
+3. **Item level** (if "Match item level" is on) — numeric stat value
+4. **Installed mods** (if "Match installed mods" is on) — sorted list of mod TweakDBID strings
+
+Two items with the same composite key are considered duplicates. This catches the common case of "I have 5 identical DR5 Nova pistols from different TweakDB sources".
+
+### Logging
+
+Every removed item is logged to the CET console:
+
+```
+[SimpleMenu] RemoveDuplicates: removed Death and Taxes [Weapons] (Items.Preset_Nue_Maiko_Legendary)
+[SimpleMenu] RemoveDuplicates: removed 4 x Bounce Back Jr. [Consumables] (Items.FirstAidWhiffV0)
+```
+
+A summary line shows the per-category breakdown and active settings:
+
+```
+[SimpleMenu] RemoveDuplicates: checked 776 items, removed 12 duplicates. Per-category: Weapons: 12 | Match: quality=true level=false mods=true | Keep: highest
+```
 
 ---
 
@@ -229,7 +309,37 @@ The research that informed this fork's compatibility work (verified against Nati
 
 ## Changelog (this fork)
 
-### v52 (2.31 compatibility fork)
+### v52.2 — Remove Duplicates feature + Search/Vehicle improvements
+
+#### New feature: Remove Duplicates
+- Added a **Remove Duplicates** tool in the Items tab → Equipment Modification section.
+- **Per-category checkboxes**: Weapons, Clothing, Cyberware, Consumables, Materials, Grenades, Junk, Mods. **All** / **None** buttons for quick selection.
+- **Configurable match options** (all default on, uncheck for looser matching):
+  - **Match quality** — when off, different quality tiers of the same item are treated as duplicates.
+  - **Match item level** — when off, different item levels (e.g. level 10 vs 50) of the same item are treated as duplicates.
+  - **Match installed mods** — when off, modded and unmodded versions of the same item are treated as duplicates.
+- **Keep mode dropdown** — controls which copy is kept when duplicates are found:
+  - **Keep first found** — arbitrary, depends on inventory order.
+  - **Keep highest quality** (default) — keeps the best quality tier.
+  - **Keep lowest quality** — keeps the worst quality tier (useful for downgrading).
+- **Two-pass algorithm**: Pass 1 groups items by composite key (name + quality + level + mods). Pass 2 picks which to keep per group based on keep mode, then removes the rest.
+- **Composite dedup key** based on functional properties (display name + quality + item level + installed mods) rather than TweakDBID — catches duplicates across craftable/preset/iconic variants of the same weapon.
+- **Safety guarantees**: equipped items (checked via `IsItemEquipped`) and quest-tagged items are never removed, regardless of settings. This is a hard rule that overrides the keep mode.
+- **Per-item logging**: each removed item is logged to the CET console with its name, category, and TweakDBID. Stackable items show the count removed.
+- **Per-category summary**: the final log line shows a breakdown like `Per-category: Weapons: 12, Clothing: 3`.
+- **Grenades filter fix**: grenades are now correctly categorised (they're typed as `Gad_Grenade` / `Gadget` in TweakDB, not `Grenade` as the old filter expected).
+
+#### Search tab improvements
+- **Type list now filters by selected Category.** Selecting "Weapon" now only shows weapon types (Assault Rifle, Pistol, etc.) and hides irrelevant types like "Tarot Card" or "Crafting Spec". Switching back to "(All)" restores the full list. Type selection resets to "(All)" on category change.
+- **Type filter no longer shows wrong items.** Clicking "Precision Rifle" used to show revolvers. Fixed by replacing two parallel display/raw arrays with a single array of `{str, raw}` pairs so the display name and raw type string can never drift out of alignment.
+
+#### Vehicle list improvement
+- **Vehicle list no longer shows invalid/unnamed vehicles.** `Items.RefreshPlayerVehicles` now validates each vehicle's `DisplayName` (resolving the CName and localised text) and filters out test/debug vehicles with empty names — same pattern the search tab uses for items.
+
+### v52.1 — Search tab Type filter fix
+- **Bug fix: Search tab Type filter showing wrong items.** Clicking "Precision Rifle" would show revolvers (and similar misalignments). Root cause: two parallel arrays (`visibleTypes` / `visibleRawTypes`) could drift out of alignment because `rawItemTypes[1]` is `nil` (the "(All)" entry has no raw type), which makes Lua's `#` operator return an undefined value on `rawItemTypes`. Fixed by replacing the two parallel arrays with a single array of `{str, raw}` pairs called `visibleTypeEntries`, so the display name and raw type string can never drift apart.
+
+### v52 — 2.31 compatibility fork
 - **Compatibility:** bundled `Cron.lua` updated 1.0.2 → 1.0.3 (timer execution order fix).
 - **Compatibility:** `pcall` protection added to `Misc.DisablePolice` direct-toggle call, `Misc.UnlockAchieve`, `Misc.FixCar` `IsExactlyA` calls, `ItemRecord:new` quality lookup, `PostLoadActions` `RefreshCraftBookMenu` and `DisablePolice` calls.
 - **Compatibility:** nil guards added to `Misc.PoliceLevel`, `Misc.PoliceLevelStep`, `Misc.DisablePolice`, `Misc.Kill`, `Misc.FixCar`, `Misc.EndQuest`, `Items.AddItem`, `PostLoadActions`.

@@ -43,17 +43,46 @@ function Items.Preload()
 end
 
 function Items.RefreshPlayerVehicles()
-    Items.Vehicles = CUtil.ArrayProjectSafe(
-        Game.GetVehicleSystem():GetPlayerVehicles(),
-        function (v)
-            local id = v.recordID.value --[[@as string]]--
-            if id:find("_player") then
-                return v.recordID.value
+    local rawVehicles = Game.GetVehicleSystem():GetPlayerVehicles()
+    local filtered = {}
+
+    for _, v in ipairs(rawVehicles) do
+        local id = v.recordID.value --[[@as string]]
+        -- Must have the "_player" suffix (the standard convention for player-ownable vehicles)
+        if id:find("_player") then
+            -- Validate the record exists and has a non-empty display name.
+            -- This mirrors the "hasName" check used in Items.ProcessFilters
+            -- for the search tab, and filters out invalid / test / debug
+            -- vehicles that would otherwise show up as blank entries.
+            local okRec, record = pcall(function() return TweakDB:GetRecord(v.recordID.value) end)
+            if okRec and record ~= nil then
+                local okName, displayName = pcall(function() return record:DisplayName() end)
+                local hasName = false
+                if okName and displayName ~= nil then
+                    -- DisplayName returns a CName; check it's not the empty CName
+                    -- (same pattern as Items.ProcessFilters line: hasName = v:DisplayName() ~= CName.new())
+                    hasName = displayName ~= CName.new()
+                    -- Also resolve the localized text to make sure it's not empty
+                    -- (some vehicles have a CName that resolves to an empty string)
+                    if hasName then
+                        local okLoc, locName = pcall(function() return Game.GetLocalizedTextByKey(displayName) end)
+                        if not okLoc or locName == nil or locName == "" then
+                            hasName = false
+                        end
+                    end
+                end
+                if hasName then
+                    table.insert(filtered, v.recordID.value)
+                else
+                    DEBUG_printl(LOG_LEVEL.Info, "RefreshPlayerVehicles: skipping invalid/unnamed vehicle:", id)
+                end
             else
-                return nil
+                DEBUG_printl(LOG_LEVEL.Info, "RefreshPlayerVehicles: skipping vehicle with unresolvable record:", id)
             end
         end
-    )
+    end
+
+    Items.Vehicles = filtered
     table.sort(Items.Vehicles)
 
     Items.VehicleNames = CUtil.ArrayProject(
