@@ -325,49 +325,73 @@ function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchLi
     local startTime = os.clock()
     local loadingSpeed = CUtil.Round(1 / (Items.Util.configuration.menuConfigs.search.loadingSpeed * 3), 5)
     DEBUG_printl(LOG_LEVEL.Info, "Starting filtering process, speed:", (loadingSpeed * 1000).."ms per item")
+    local skippedFilters = 0  -- count of records that failed during filtering
     for j, v in pairs(records) do
         local filterFunc = function()
             ModState.LoadedPercent = CUtil.Clamp(CUtil.Round((j / n)  * 25, 0), 0, 25)
-            local hasName = v:DisplayName() ~= CName.new()
-            local tags = v:Tags()
-            local id = v:GetID().value
-            local tagMatch = false
-            local tagExcl = false
-            local idMatch = false
-            local idExcl = false
-            local isBase = false
-            local hasTags = tags ~= nil and #tags > 0
+            -- Wrap the per-record filtering in pcall so a malformed TweakDB
+            -- record doesn't hang the entire filter pass (and the loading bar).
+            -- Same fix pattern as CreateItemRecordArray — without pcall, a
+            -- thrown error would prevent the j==n completion check from
+            -- running, leaving the search tab stuck on "Loading Items: X%".
+            -- (Fix for GitHub issue #1)
+            local okFilter = pcall(function()
+                local hasName = v:DisplayName() ~= CName.new()
+                local tags = v:Tags()
+                local id = v:GetID().value
+                local tagMatch = false
+                local tagExcl = false
+                local idMatch = false
+                local idExcl = false
+                local isBase = false
+                local hasTags = tags ~= nil and #tags > 0
 
-            if string.find(id, "Base") then
-                isBase = true
-            end
+                if string.find(id, "Base") then
+                    isBase = true
+                end
 
-            if not isBase then
-                if hasTags then
-                    --true if no tags passed
-                    if #tagsMatchList > 0 then
-                        tagMatch = CUtil.AnyTagExists(tags, tagsMatchList)
-                    else
-                        tagMatch = true
+                if not isBase then
+                    if hasTags then
+                        --true if no tags passed
+                        if #tagsMatchList > 0 then
+                            tagMatch = CUtil.AnyTagExists(tags, tagsMatchList)
+                        else
+                            tagMatch = true
+                        end
+                    end
+
+                    tagExcl = not CUtil.AnyTagExists(tags, tagsExcludeList)
+
+                    --true if no id filters passed
+                    if #idMatchList > 0 then
+                        idMatch = CUtil.MatchString(id, idMatchList)
+                    end
+
+                    idExcl = CUtil.MatchString(id, idExcludeList)
+
+                    if hasTags and hasName and tagMatch and tagExcl and (not idExcl or idMatch) then
+                        outRecordList[k] = v
+                        k = k + 1
                     end
                 end
-
-                tagExcl = not CUtil.AnyTagExists(tags, tagsExcludeList)
-
-                --true if no id filters passed
-                if #idMatchList > 0 then
-                    idMatch = CUtil.MatchString(id, idMatchList)
-                end
-
-                idExcl = CUtil.MatchString(id, idExcludeList)
-
-                if hasTags and hasName and tagMatch and tagExcl and (not idExcl or idMatch) then
-                    outRecordList[k] = v
-                    k = k + 1
+            end)
+            if not okFilter then
+                skippedFilters = skippedFilters + 1
+                if skippedFilters <= 10 then
+                    local tdbidForLog = "?"
+                    local okId, idVal = pcall(function() return v:GetID() end)
+                    if okId and idVal then
+                        local okStr, idStr = pcall(function() return idVal.value end)
+                        if okStr and type(idStr) == "string" then tdbidForLog = idStr end
+                    end
+                    print("[SimpleMenu] Search filter: skipping malformed TweakDB record #"..j.." ("..tdbidForLog..")")
                 end
             end
 
             if j == n then
+                if skippedFilters > 0 then
+                    print("[SimpleMenu] Search filter: completed with", skippedFilters, "malformed record(s) skipped")
+                end
                 local postFilterFunc = function()
                     local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
                     local avgTime = CUtil.Round(finalTime / n, 5)

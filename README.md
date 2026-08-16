@@ -15,10 +15,10 @@ This fork is a derivative work and would not exist without the work of the peopl
 
 | Role | Person | Link |
 |---|---|---|
-| Original creator / original author of Simple Menu | **Dank Rafft** | [Nexus profile](https://www.nexusmods.com/profile/DankRafft) |
-| Current upstream maintainer (2.0+ / Phantom Liberty / 2.3 / 2.31 ports) | **capncoolio2** | [Nexus profile](https://www.nexusmods.com/profile/capncoolio2) |
+| Original creator / original author of Simple Menu | **Dank Rafft** | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/4334902) |
+| Current upstream maintainer (2.0+ / Phantom Liberty / 2.3 / 2.31 ports) | **capncoolio2** | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/78694482) |
 | Original Nexus mod page | Dank Rafft (with capncoolio2 credited as maintainer) | https://www.nexusmods.com/cyberpunk2077/mods/818 |
-| Breach Protocol tab | Corvellt | [Nexus profile](https://www.nexusmods.com/profile/Corvellt) |
+| Breach Protocol tab | Corvellt | [Nexus profile](https://www.nexusmods.com/cyberpunk2077/users/20850139) |
 | Original Infinite Ammo script | TheBs65422 | — |
 | Original item upgrade script | Expired | — |
 | `cp2077-cet-kit` (Cron / GameSession / GameHUD) | psiberx | [github.com/psiberx/cp2077-cet-kit](https://github.com/psiberx/cp2077-cet-kit) (MIT) |
@@ -66,10 +66,12 @@ This fork:
 | Component | Minimum version | Recommended | Why |
 |---|---|---|---|
 | **Cyberpunk 2077** | 2.21 | **2.31** | This fork is built and tested against 2.31. The codebase already supports 2.0 → 2.31, but 2.31 is the recommended target. |
-| **Cyber Engine Tweaks (CET)** | 1.34.0 | **1.37.1** | CET 1.37.1 is the latest release that supports Cyberpunk 2.31. Older versions will not load on 2.31. |
-| **RED4ext** | 2.2.0 | **2.31-compatible build** | Required by CET 1.37.x. |
+| **Cyber Engine Tweaks (CET)** | 1.34.0 | **1.37.1** | CET 1.37.1 is the latest release that supports Cyberpunk 2.31. Older versions will not load on 2.31. [Download from GitHub](https://github.com/maximegmd/CyberEngineTweaks/releases). |
+| **RED4ext** | 2.2.0 | **2.31-compatible build** | Required by CET 1.37.x. [Download from GitHub](https://github.com/WopsS/RED4ext/releases). |
 | **TweakXL** (optional) | 1.7.0+ | latest | Only required if you use TweakXL-dependent mods alongside Simple Menu. |
 | **ArchiveXL** (optional) | 1.7.0+ | latest | Only required if you use ArchiveXL-dependent mods alongside Simple Menu. |
+
+> **Note:** The canonical CET repository has moved from `yamashi/CyberEngineTweaks` to **`maximegmd/CyberEngineTweaks`**. The old URL redirects, but please update any bookmarks.
 
 ---
 
@@ -77,8 +79,8 @@ This fork:
 
 ### Fresh install
 
-1. Install **Cyber Engine Tweaks 1.37.1** (or newer) by extracting its `bin/` folder into your Cyberpunk 2077 install directory.
-2. Install **RED4ext** (the build matching your game version).
+1. Install **Cyber Engine Tweaks 1.37.1** (or newer) by extracting its `bin/` folder into your Cyberpunk 2077 install directory. ([CET releases](https://github.com/maximegmd/CyberEngineTweaks/releases))
+2. Install **RED4ext** (the build matching your game version). ([RED4ext releases](https://github.com/WopsS/RED4ext/releases))
 3. Download this fork (clone the repo or grab a release `.zip`).
 4. Copy the `bin/` folder from this repo into your Cyberpunk 2077 install directory. The final path should look like:
    ```
@@ -308,6 +310,15 @@ The research that informed this fork's compatibility work (verified against Nati
 ---
 
 ## Changelog (this fork)
+
+### v52.3 — Search index hang fix (GitHub issue #1)
+
+#### Bug fix: Search index stuck at 99%
+- **Root cause:** When the search indexer encountered a malformed/broken TweakDB record, constructing the `ItemRecord` threw a Lua error. Because the indexing is scheduled via `Cron.After`, a thrown error inside the callback would silently kill that callback — meaning the progress update (`ModState.LoadedPercent = ...`) and the `k == TotalRecords` completion check never ran. The loading bar would sit at 99% forever.
+- **Fix:** Wrapped `ItemRecord(v)` construction in `pcall` inside `CreateItemRecordArray`. If a record fails to construct, it's now skipped (and logged for diagnosis) instead of hanging the entire indexing pass. The indexer will always complete and reach 100% even if some records are broken.
+- **Same fix applied to `Items.ProcessFilters`** — the pre-index filtering pass had the same vulnerability. Wrapped the per-record filter logic in `pcall` so a malformed record can't hang the loading bar at 25% either.
+- **Logging:** The first 10 skipped records are logged to the CET console with their TweakDBID (when resolvable) for diagnosis. A summary line is printed at the end: `Search index: completed with N malformed record(s) skipped`.
+- **Config version bumped to 54.**
 
 ### v52.2 — Remove Duplicates feature + Search/Vehicle improvements
 
