@@ -321,20 +321,48 @@ function Items.GetFilteredRecords(records, types, tagsMatchList, tagsExcludeList
 end
 
 function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchList, idExcludeList, outRecordList)
+    -- COMPACT the input array into a fresh, hole-free array first.
+    -- The upstream `records` array has been through CUtil.ArrayRemove
+    -- (in GetFilteredRecords above), which sets removed slots to nil
+    -- but does NOT shrink the array — leaving nil holes. With nil holes:
+    --   - #records returns an undefined value (stops at the first nil),
+    --     so `n` (used for progress + completion) would be wrong
+    --   - pairs() skips nil holes, so the last key yielded is NOT
+    --     necessarily the last numeric index — the j==n completion
+    --     check never fires and the loading bar hangs at 25% (then never
+    --     advances to the indexing phase).
+    -- Compacting fixes both problems. (Real fix for GitHub issue #1.)
+    local compacted = {}
+    for _, v in pairs(records) do
+        table.insert(compacted, v)
+    end
+    records = compacted
+
     local k, n = 1, #records
     local startTime = os.clock()
     local loadingSpeed = CUtil.Round(1 / (Items.Util.configuration.menuConfigs.search.loadingSpeed * 3), 5)
-    DEBUG_printl(LOG_LEVEL.Info, "Starting filtering process, speed:", (loadingSpeed * 1000).."ms per item")
+    DEBUG_printl(LOG_LEVEL.Info, "Starting filtering process, speed:", (loadingSpeed * 1000).."ms per item",
+        "| total records:", n)
     local skippedFilters = 0  -- count of records that failed during filtering
-    for j, v in pairs(records) do
+    local processedCount = 0  -- tracks how many Cron callbacks have run (completion check)
+
+    -- Edge case: empty records array — skip straight to PreLoad so the
+    -- indexing phase can proceed (it'll find nothing to index and exit).
+    if n == 0 then
+        print("[SimpleMenu] Search filter: no records to filter (empty array)")
+        local postFilterFunc = function()
+            ModState.LoadingItemsState = LoadingState.PreLoad
+            ModState.LoadedPercent = 25
+            DEBUG_printl(LOG_LEVEL.Info, "Pre-Fetch complete (empty input)")
+        end
+        Cron.After(0.33, postFilterFunc)
+        return
+    end
+
+    for j, v in ipairs(records) do
         local filterFunc = function()
-            ModState.LoadedPercent = CUtil.Clamp(CUtil.Round((j / n)  * 25, 0), 0, 25)
             -- Wrap the per-record filtering in pcall so a malformed TweakDB
-            -- record doesn't hang the entire filter pass (and the loading bar).
-            -- Same fix pattern as CreateItemRecordArray — without pcall, a
-            -- thrown error would prevent the j==n completion check from
-            -- running, leaving the search tab stuck on "Loading Items: X%".
-            -- (Fix for GitHub issue #1)
+            -- record doesn't hang the entire filter pass. (Part of issue #1 fix)
             local okFilter = pcall(function()
                 local hasName = v:DisplayName() ~= CName.new()
                 local tags = v:Tags()
@@ -388,7 +416,14 @@ function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchLi
                 end
             end
 
-            if j == n then
+            -- Use a processedCount counter for the completion check instead
+            -- of relying on j == n. Even though we now compact the array
+            -- (so ipairs goes 1..n in order and j==n will fire), the counter
+            -- approach is more robust against any future changes.
+            processedCount = processedCount + 1
+            ModState.LoadedPercent = CUtil.Clamp(CUtil.Round((processedCount / n)  * 25, 0), 0, 25)
+
+            if processedCount == n then
                 if skippedFilters > 0 then
                     print("[SimpleMenu] Search filter: completed with", skippedFilters, "malformed record(s) skipped")
                 end

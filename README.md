@@ -311,13 +311,27 @@ The research that informed this fork's compatibility work (verified against Nati
 
 ## Changelog (this fork)
 
-### v52.3 — Search index hang fix (GitHub issue #1)
+### v52.4 — Real fix for search index hang at 99% (GitHub issue #1)
 
-#### Bug fix: Search index stuck at 99%
-- **Root cause:** When the search indexer encountered a malformed/broken TweakDB record, constructing the `ItemRecord` threw a Lua error. Because the indexing is scheduled via `Cron.After`, a thrown error inside the callback would silently kill that callback — meaning the progress update (`ModState.LoadedPercent = ...`) and the `k == TotalRecords` completion check never ran. The loading bar would sit at 99% forever.
-- **Fix:** Wrapped `ItemRecord(v)` construction in `pcall` inside `CreateItemRecordArray`. If a record fails to construct, it's now skipped (and logged for diagnosis) instead of hanging the entire indexing pass. The indexer will always complete and reach 100% even if some records are broken.
-- **Same fix applied to `Items.ProcessFilters`** — the pre-index filtering pass had the same vulnerability. Wrapped the per-record filter logic in `pcall` so a malformed record can't hang the loading bar at 25% either.
-- **Logging:** The first 10 skipped records are logged to the CET console with their TweakDBID (when resolvable) for diagnosis. A summary line is printed at the end: `Search index: completed with N malformed record(s) skipped`.
+#### Bug fix: Search index STILL stuck at 99% (the real root cause)
+- **The v52.3 fix was necessary but not sufficient.** The `pcall` protection added in v52.3 catches thrown errors, but the loading bar could still hang at 99% (or 25%) even when no errors occurred.
+- **Real root cause:** The input array to `CreateItemRecordArray` (and `Items.ProcessFilters`) has been through `CUtil.ArrayRemove`, which sets removed slots to `nil` but does NOT shrink the array — leaving **nil holes**. With nil holes:
+  - `#TDBItemRecordArray` returns an undefined value (stops at the first nil), so `ModState.TotalRecords` was wrong.
+  - `pairs()` skips nil holes, so the last key yielded is NOT necessarily the last numeric index — the `k == TotalRecords` completion check **never fired**, and the loading bar hung at 99% forever.
+- **The fix (two parts):**
+  1. **Compact the array** into a fresh, hole-free array before iterating. This fixes both `#array` (correct length) and `pairs()`/`ipairs()` iteration (no skipped keys).
+  2. **Use a `processedCount` counter** for the completion check instead of `k == TotalRecords`. Even with a compacted array, the counter approach is more robust against future changes.
+- **Applied to both `CreateItemRecordArray`** (`classes/itemrecord.lua`) **and `Items.ProcessFilters`** (`items/items.lua`) — both had the same vulnerability.
+- **Edge case handling:** If the input array is empty after compaction (all records were filtered out), the indexer now skips straight to the `Sorted` state instead of hanging.
+- **Config version bumped to 55.**
+
+### v52.3 — Search index error protection (GitHub issue #1, partial fix)
+
+#### Bug fix: Search index stuck at 99% (error-induced hang)
+- **Root cause (partial):** When the search indexer encountered a malformed/broken TweakDB record, constructing the `ItemRecord` threw a Lua error. Because the indexing is scheduled via `Cron.After`, a thrown error inside the callback would silently kill that callback — meaning the progress update (`ModState.LoadedPercent = ...`) and the `k == TotalRecords` completion check never ran. The loading bar would sit at 99% forever.
+- **Fix:** Wrapped `ItemRecord(v)` construction in `pcall` inside `CreateItemRecordArray`. If a record fails to construct, it's now skipped (and logged for diagnosis) instead of hanging the entire indexing pass.
+- **Same fix applied to `Items.ProcessFilters`** — the pre-index filtering pass had the same vulnerability.
+- **Note:** This fix was necessary but NOT sufficient — see v52.4 for the complete fix.
 - **Config version bumped to 54.**
 
 ### v52.2 — Remove Duplicates feature + Search/Vehicle improvements

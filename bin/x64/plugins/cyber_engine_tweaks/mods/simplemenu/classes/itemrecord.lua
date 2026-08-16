@@ -509,19 +509,47 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
         createStarted = true
         sort = sort or false
         ModState.LoadingItemsState = LoadingState.Loading
+
+        -- COMPACT the input array into a fresh, hole-free array first.
+        -- The upstream code passes an array that has been through
+        -- CUtil.ArrayRemove, which sets removed slots to nil but does NOT
+        -- shrink the array — leaving nil holes. With nil holes:
+        --   - #TDBItemRecordArray returns an undefined value (stops at the
+        --    first nil), so ModState.TotalRecords would be wrong
+        --   -pairs() skips nil holes, so the last key yielded is NOT
+        --    necessarily the last numeric index — the k==TotalRecords
+        --    completion check never fires and the loading bar hangs at 99%
+        -- Compacting into a fresh array fixes BOTH problems.
+        -- (This is the real fix for GitHub issue #1 — the pcall added in
+        -- v52.3 was necessary but not sufficient; the completion check
+        -- itself was broken.)
+        local compacted = {}
+        for _, v in pairs(TDBItemRecordArray) do
+            table.insert(compacted, v)
+        end
+        TDBItemRecordArray = compacted
+
         ModState.TotalRecords = #TDBItemRecordArray
+        if ModState.TotalRecords == 0 then
+            -- Edge case: all records were filtered out. Skip straight to Sorted.
+            print("[SimpleMenu] Search index: no records to index (empty array after filtering)")
+            ModState.LoadedPercent = 100
+            ModState.LoadingItemsState = LoadingState.Sorted
+            Cron.Halt(timerId)
+            return
+        end
+
         local loadingSpeed = CUtil.Round(1 / Util.configuration.menuConfigs.search.loadingSpeed, 5)
-        DEBUG_printl(LOG_LEVEL.Info, "Starting indexing process, speed:", (loadingSpeed * 1000).."ms per item")
+        DEBUG_printl(LOG_LEVEL.Info, "Starting indexing process, speed:", (loadingSpeed * 1000).."ms per item",
+            "| total records:", ModState.TotalRecords)
         local skippedRecords = 0  -- count of records that failed to construct
-        for k, v in pairs(TDBItemRecordArray) do
+        local processedCount = 0   -- tracks how many Cron callbacks have run (completion check)
+
+        for k, v in ipairs(TDBItemRecordArray) do
             local insertFunc = function ()
                 -- Wrap ItemRecord(v) construction in pcall so a single
                 -- malformed/broken TweakDB record doesn't hang the entire
-                -- indexing process at 99%. Without this, a thrown error
-                -- would prevent the progress update and the k==TotalRecords
-                -- completion check from ever running, leaving the search
-                -- tab stuck on "Loading Items: 99%" forever.
-                -- (Fix for GitHub issue #1)
+                -- indexing process. (Part of GitHub issue #1 fix)
                 local okRec, newRec = pcall(function() return ItemRecord(v) end)
                 if okRec and newRec ~= nil then
                     table.insert(GlobalItemRecords, newRec)
@@ -538,8 +566,16 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
                         print("[SimpleMenu] Search index: skipping malformed TweakDB record #"..k.." ("..tdbidForLog..")")
                     end
                 end
-                ModState.LoadedPercent = CUtil.Clamp(25 + CUtil.Round((k / ModState.TotalRecords)  * 75, 0), 25, 99)
-                if k == ModState.TotalRecords then
+
+                -- Use a processedCount counter for the completion check instead
+                -- of relying on k == TotalRecords. Even though we now compact
+                -- the array (so ipairs goes 1..N in order and k==N will fire),
+                -- the counter approach is more robust against any future
+                -- changes to how the array is built.
+                processedCount = processedCount + 1
+                ModState.LoadedPercent = CUtil.Clamp(25 + CUtil.Round((processedCount / ModState.TotalRecords)  * 75, 0), 25, 99)
+
+                if processedCount == ModState.TotalRecords then
                     DEBUG_printl(LOG_LEVEL.Trace, "Index complete")
                     if skippedRecords > 0 then
                         print("[SimpleMenu] Search index: completed with", skippedRecords, "malformed record(s) skipped")
