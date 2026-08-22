@@ -311,7 +311,19 @@ The research that informed this fork's compatibility work (verified against Nati
 
 ## Changelog (this fork)
 
-### v52.4 — Real fix for search index hang at 99% (GitHub issue #1)
+### v52.5 — Final fix for search index hang at 99% (GitHub issue #1)
+
+#### Bug fix: Search index STILL stuck at 99% — the timer-scheduler bug
+- **The v52.4 fix (array compaction + `processedCount`) was necessary but not sufficient.** The indexer itself completes now, but the loading bar could still hang at 99% on slower machines / hitching frames.
+- **Real root cause — `Cron.Update` removal-phase bug** (`libs/cp2077-cet-kit/Cron.lua`):
+  - `Cron.Update` collected the indices of fired one-shot timers *during* its iteration loop, then removed them *after* the loop. Any `Cron.Halt()` executed inside a callback (e.g. `postIndex` halting the `createFunc` poller in `CreateItemRecordArray`) did `table.remove` **immediately**, shifting the array mid-iteration and invalidating the captured indices. The removal phase then did `table.remove(timers, i)` with an out-of-bounds index, throwing **"position out of bounds" on every single load**, and — worse — leaving the fired timer in the array as a "zombie".
+  - The zombie re-fired `postIndex` on the next frame, which unconditionally set `LoadingItemsState = MainIndex`. On hitching frames `sortFunc` fires in the same frame: it sorts, sets `Sorted`, and halts itself — and then the zombie reset the state **backwards to `MainIndex`**, with `sortFunc` already gone. The pipeline deadlocked at 99% forever.
+- **The fix (two parts):**
+  1. **`Cron.lua` (v1.0.4):** `Cron.Halt` now only marks a timer (`halted = true`) instead of removing it mid-iteration. `Cron.Update` marks fired one-shot timers `halted` *before* invoking their callback (so they can never fire twice, even if the callback errors), and removes all halted timers in a backwards sweep **after** the loop. No index-based removal list means no stale indices and no out-of-bounds errors — ever. `Pause`/`Resume` semantics are unchanged.
+  2. **Forward-only state transitions** in `classes/itemrecord.lua`: `postIndex` (and the empty-array branch) now only advance the state machine *from* `Loading`. A stray re-run can no longer step the state backwards and deadlock the pipeline.
+- **Config version bumped to 52.5.**
+
+### v52.4 — Fix for search index hang at 99% (GitHub issue #1, partial fix)
 
 #### Bug fix: Search index STILL stuck at 99% (the real root cause)
 - **The v52.3 fix was necessary but not sufficient.** The `pcall` protection added in v52.3 catches thrown errors, but the loading bar could still hang at 99% (or 25%) even when no errors occurred.
@@ -323,7 +335,8 @@ The research that informed this fork's compatibility work (verified against Nati
   2. **Use a `processedCount` counter** for the completion check instead of `k == TotalRecords`. Even with a compacted array, the counter approach is more robust against future changes.
 - **Applied to both `CreateItemRecordArray`** (`classes/itemrecord.lua`) **and `Items.ProcessFilters`** (`items/items.lua`) — both had the same vulnerability.
 - **Edge case handling:** If the input array is empty after compaction (all records were filtered out), the indexer now skips straight to the `Sorted` state instead of hanging.
-- **Config version bumped to 55.**
+- **Note:** This fix was necessary but NOT sufficient — see v52.5 for the complete fix.
+- **Config version bumped to 52.4.**
 
 ### v52.3 — Search index error protection (GitHub issue #1, partial fix)
 
@@ -331,8 +344,8 @@ The research that informed this fork's compatibility work (verified against Nati
 - **Root cause (partial):** When the search indexer encountered a malformed/broken TweakDB record, constructing the `ItemRecord` threw a Lua error. Because the indexing is scheduled via `Cron.After`, a thrown error inside the callback would silently kill that callback — meaning the progress update (`ModState.LoadedPercent = ...`) and the `k == TotalRecords` completion check never ran. The loading bar would sit at 99% forever.
 - **Fix:** Wrapped `ItemRecord(v)` construction in `pcall` inside `CreateItemRecordArray`. If a record fails to construct, it's now skipped (and logged for diagnosis) instead of hanging the entire indexing pass.
 - **Same fix applied to `Items.ProcessFilters`** — the pre-index filtering pass had the same vulnerability.
-- **Note:** This fix was necessary but NOT sufficient — see v52.4 for the complete fix.
-- **Config version bumped to 54.**
+- **Note:** This fix was necessary but NOT sufficient — see v52.4 and v52.5.
+- **Config version bumped to 52.3.**
 
 ### v52.2 — Remove Duplicates feature + Search/Vehicle improvements
 

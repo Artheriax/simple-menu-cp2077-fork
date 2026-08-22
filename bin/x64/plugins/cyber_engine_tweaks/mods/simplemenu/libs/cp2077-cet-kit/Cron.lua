@@ -5,7 +5,7 @@ Timed Tasks Manager
 Copyright (c) 2021 psiberx
 ]]
 
-local Cron = { version = '1.0.3' }
+local Cron = { version = '1.0.4' }
 
 local timers = {}
 local counter = 0
@@ -48,6 +48,7 @@ local function addTimer(timeout, recurring, callback, args)
 		recurring = recurring,
 		timeout = timeout,
 		active = true,
+		halted = false,
 		delay = timeout,
 		args = args,
 	}
@@ -107,9 +108,16 @@ function Cron.Halt(timerId)
 		timerId = timerId.id
 	end
 
-	for i, timer in ipairs(timers) do
+	-- Defer the actual removal to Cron.Update. Removing from `timers` here
+	-- would shift the array while Cron.Update is iterating it (timers are
+	-- commonly halted from inside their own or another timer's callback),
+	-- which invalidates any pending removal indices and can make the update
+	-- loop skip timers or remove the wrong one. Marking is idempotent and
+	-- safe to call from within a timer callback.
+	for _, timer in ipairs(timers) do
 		if timer.id == timerId then
-			table.remove(timers, i)
+			timer.halted = true
+			timer.active = false
 			break
 		end
 	end
@@ -149,17 +157,18 @@ end
 ---@return void?
 function Cron.Update(delta)
 	if #timers > 0 then
-		local finished = {}
-
 		for i, timer in ipairs(timers) do
-			if timer.active then
+			if timer.active and not timer.halted then
 				timer.delay = timer.delay - delta
 
 				if timer.delay <= 0 then
 					if timer.recurring then
 						timer.delay = timer.delay + timer.timeout
 					else
-						table.insert(finished, i)
+						-- Mark the one-shot for removal before invoking its
+						-- callback, so it can never fire twice (e.g. if the
+						-- callback throws, or halts another timer).
+						timer.halted = true
 					end
 
 					timer.callback(timer.args)
@@ -167,9 +176,13 @@ function Cron.Update(delta)
 			end
 		end
 
-		if #finished > 0 then
-			for i = #finished, 1, -1 do
-				table.remove(timers, finished[i])
+		-- Remove finished/halted timers AFTER the iteration loop, by value
+		-- rather than by pre-captured index. Callbacks may have appended new
+		-- timers or halted existing ones while we iterated; removing here
+		-- with a backwards sweep keeps every index valid.
+		for i = #timers, 1, -1 do
+			if timers[i].halted then
+				table.remove(timers, i)
 			end
 		end
 	end

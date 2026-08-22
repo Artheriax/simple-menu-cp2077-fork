@@ -534,7 +534,10 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
             -- Edge case: all records were filtered out. Skip straight to Sorted.
             print("[SimpleMenu] Search index: no records to index (empty array after filtering)")
             ModState.LoadedPercent = 100
-            ModState.LoadingItemsState = LoadingState.Sorted
+            -- Forward-only transition: never step the state machine backwards.
+            if ModState.LoadingItemsState == LoadingState.Loading then
+                ModState.LoadingItemsState = LoadingState.Sorted
+            end
             Cron.Halt(timerId)
             return
         end
@@ -581,11 +584,20 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
                         print("[SimpleMenu] Search index: completed with", skippedRecords, "malformed record(s) skipped")
                     end
                     local postIndex = function()
+                        -- Guard the transition so this callback is idempotent.
+                        -- Only advance FROM Loading; if a later stage (sort,
+                        -- consumables, ...) already ran, never step the state
+                        -- machine backwards — that would deadlock the pipeline
+                        -- and leave the loading bar stuck at 99% forever.
                         if sort then
-                            ModState.LoadingItemsState = LoadingState.MainIndex
+                            if ModState.LoadingItemsState == LoadingState.Loading then
+                                ModState.LoadingItemsState = LoadingState.MainIndex
+                            end
                         else
                             DEBUG_printl(LOG_LEVEL.Trace, "Skipping sort")
-                            ModState.LoadingItemsState = LoadingState.Sorted
+                            if ModState.LoadingItemsState == LoadingState.Loading then
+                                ModState.LoadingItemsState = LoadingState.Sorted
+                            end
                         end
                         local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
                         local avgTime = CUtil.Round(finalTime / ModState.TotalRecords, 5)
