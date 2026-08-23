@@ -240,25 +240,36 @@ function Perks.Preload()
 end
 
 function Perks.AddPerkLevel(category, type)
+    local perkList = Perks.PerkList and Perks.PerkList[category]
+    local perk = perkList and perkList[type]
+    if perk == nil then
+        print("[SimpleMenu] Perks: invalid category/type selection (Preload did not run or index out of range)")
+        return
+    end
     local pdd = PlayerDevelopmentSystem.GetData(Game.GetPlayer())
-    print(category, type)
-    local succ = pdd:BuyNewPerk(Perks.PerkList[category][type], true) --force so doesn't spend points
+    local succ = pdd:BuyNewPerk(perk, true) --force so doesn't spend points
     if succ then
-        print("[SimpleMenu] Perk Added:", CUtil.GetLocalizedPerkName(Perks.PerkList[category][type]))
+        print("[SimpleMenu] Perk Added:", CUtil.GetLocalizedPerkName(perk))
     else
-        print("[SimpleMenu] could not add perk:", CUtil.GetLocalizedPerkName(Perks.PerkList[category][type]))
+        print("[SimpleMenu] could not add perk:", CUtil.GetLocalizedPerkName(perk))
     end
 end
 
 function Perks.RemovePerk(category, type)
+    local perkList = Perks.PerkList and Perks.PerkList[category]
+    local perk = perkList and perkList[type]
+    if perk == nil then
+        print("[SimpleMenu] Perks: invalid category/type selection (Preload did not run or index out of range)")
+        return
+    end
     local pdd = PlayerDevelopmentSystem.GetData(Game.GetPlayer())
 
     --force sell gives back points even though force buy doesn't spend them, so... lol w/e
-    local sold, level = pdd:ForceSellNewPerk(Perks.PerkList[category][type])
+    local sold, level = pdd:ForceSellNewPerk(perk)
     if sold then
-        print("[SimpleMenu] Perk Removed:", CUtil.GetLocalizedPerkName(Perks.PerkList[category][type]), "Level Removed:", level)
+        print("[SimpleMenu] Perk Removed:", CUtil.GetLocalizedPerkName(perk), "Level Removed:", level)
     else
-        print("[SimpleMenu] could not remove perk", CUtil.GetLocalizedPerkName(Perks.PerkList[category][type]))
+        print("[SimpleMenu] could not remove perk", CUtil.GetLocalizedPerkName(perk))
     end
 end
 

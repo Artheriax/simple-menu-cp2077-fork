@@ -273,6 +273,10 @@ end
 local function QSM_SetActiveVehicle(qsm, pv)
     DEBUG_printl(LOG_LEVEL.Trace, "Creating QSM command")
     local itemRecord = TweakDB:GetRecord(pv.recordID)
+    if itemRecord == nil then
+        print("[SimpleMenu] FixCar: could not resolve vehicle record for", tostring(pv.recordID and pv.recordID.value or "?"))
+        return
+    end
     local iconPath = qsm:FindTempVehicleIcon(pv)
     local title = itemRecord:Model():EnumName()
     local type = itemRecord:Type():EnumName()

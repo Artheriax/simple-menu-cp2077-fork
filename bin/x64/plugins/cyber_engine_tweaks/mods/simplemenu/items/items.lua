@@ -66,7 +66,21 @@ function Items.Preload()
 end
 
 function Items.RefreshPlayerVehicles()
-    local rawVehicles = Game.GetVehicleSystem():GetPlayerVehicles()
+    -- Guard: this can be called from the Misc tab's draw loop (every frame
+    -- until the list is populated); during load transitions the vehicle
+    -- system or player-vehicle list may not be ready yet.
+    local vs = Game.GetVehicleSystem()
+    if vs == nil then
+        DEBUG_printl(LOG_LEVEL.Info, "RefreshPlayerVehicles: VehicleSystem not available yet")
+        return Items.Vehicles, Items.VehicleNames
+    end
+
+    local okList, rawVehicles = pcall(function() return vs:GetPlayerVehicles() end)
+    if not okList or rawVehicles == nil then
+        DEBUG_printl(LOG_LEVEL.Info, "RefreshPlayerVehicles: GetPlayerVehicles failed")
+        return Items.Vehicles, Items.VehicleNames
+    end
+
     local filtered = {}
 
     for _, v in ipairs(rawVehicles) do

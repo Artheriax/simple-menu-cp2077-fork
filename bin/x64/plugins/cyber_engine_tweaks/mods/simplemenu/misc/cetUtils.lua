@@ -19,13 +19,31 @@ function CetUtils.EnumName(enum, value)
 end
 
 function CetUtils.GetLocalizedPerkName(newPerkType)
-    local locKey = TweakDB:GetRecord("NewPerks."..newPerkType.value):Loc_name_key():upper():gsub("(LOCKEY#)(%d+)", "%2")
+    -- pcall + nil-guard: this is called EVERY FRAME while the Player tab's
+    -- perk section is open (Perks.GetPerkNames -> this). The perk enum list
+    -- is hardcoded per game version; if a single "NewPerks.<name>" record
+    -- doesn't resolve on the user's game version (or TweakDB hiccups during
+    -- a load transition), an unguarded chain here would crash the whole UI
+    -- draw pass on every frame.
+    local okRec, record = pcall(function() return TweakDB:GetRecord("NewPerks."..newPerkType.value) end)
+    if not okRec or record == nil then return "" end
+
+    local okKey, locKey = pcall(function()
+        return record:Loc_name_key():upper():gsub("(LOCKEY#)(%d+)", "%2")
+    end)
+    if not okKey or locKey == nil then return "" end
+
     local x, nameStr = pcall(function() return Game.GetLocalizedTextByKey(CName.new(tonumber(locKey))) end)
     if x then return nameStr else return "" end
 end
 
 function CetUtils.GetPerkLvlCount(newPerkType)
-    return TweakDB:GetRecord("NewPerks."..newPerkType.value):GetLevelsCount()
+    local okRec, record = pcall(function() return TweakDB:GetRecord("NewPerks."..newPerkType.value) end)
+    if not okRec or record == nil then return 0 end
+
+    local okCount, count = pcall(function() return record:GetLevelsCount() end)
+    if not okCount or count == nil then return 0 end
+    return count
 end
 
 function CetUtils.StringEmptyOrWhitespace(str)

@@ -473,8 +473,16 @@ end
 
 local function ReloadListener()
     if GameState.isLoaded then
+        -- Player can be briefly nil while GameState.isLoaded is already true
+        -- (load transitions, death, vehicle entry edge cases). This runs every
+        -- 0.3s via Cron; an error thrown here propagates through Cron.Update
+        -- and skips every timer scheduled after it in the same frame —
+        -- including the Search indexer batches. Guard instead of throwing.
+        local player = Game.GetPlayer()
+        if player == nil then return end
         local weaponBbDef = GetAllBlackboardDefs().PlayerStateMachine.Weapon
-        local psmbb = Game.GetPlayer():GetPlayerStateMachineBlackboard()
+        local psmbb = player:GetPlayerStateMachineBlackboard()
+        if psmbb == nil then return end
         local currentWState = psmbb:GetInt(weaponBbDef)
         if currentWState ~= SimpleMenu.previousWState then
             SimpleMenu.Ammo.WeaponStateListener(currentWState)

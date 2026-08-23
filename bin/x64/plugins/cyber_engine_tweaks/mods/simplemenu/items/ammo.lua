@@ -411,6 +411,10 @@ end
 ---@param wStatsObjId any
 local function ApplyWeaponModifiers(modifier, mType, enable, wType, wStatsObjId, wItemID)
     local intermediates = {}
+    -- Guard: modifierGroups entries are populated by Ammo.Preload(); if that
+    -- failed (init errors are isolated, but the groups stay empty) an
+    -- unguarded pairs(nil) would throw from the equip/unequip observer.
+    if modifierGroups[modifier] == nil then return end
     if mType == wType or mType == EModifierType.Both then
         DEBUG_printl(LOG_LEVEL.Trace,
             "\nmodifier:", modifier, EnumName(EModifier, modifier),
@@ -452,7 +456,13 @@ end
 ---@param tType ETargetType
 local function ApplyOtherModifiers(modifier, mType, enable, tType)
     if mType == tType then
-        local playerEnt = Game.GetPlayer():GetEntityID()
+        -- Guards: modifierGroups entries are populated by Ammo.Preload(); if
+        -- that failed (init errors are isolated now, but groups stay empty),
+        -- an unguarded pairs(nil) would throw from the equip/unequip observer.
+        if modifierGroups[modifier] == nil then return end
+        local player = Game.GetPlayer()
+        if player == nil then return end
+        local playerEnt = player:GetEntityID()
         for _, v in pairs(modifierGroups[modifier]) do
             if enable then
                 Ammo.ss:AddModifier(playerEnt, v)
@@ -470,6 +480,9 @@ end
 ---@param wItemID? any
 function Ammo.ChangeModifiers(modifier, enable, wItemID)
     RefreshSystems()
+    -- Player can be briefly nil during load transitions; every caller path
+    -- (hotkey, UI toggle, equip observer) must not throw.
+    if Ammo.player == nil then return end
     local mType = GetModifierType(modifier)
 
     local filter = {

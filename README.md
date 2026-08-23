@@ -32,6 +32,20 @@ This fork:
 
 ## What this fork fixes (vs. the upstream snapshot it was forked from)
 
+### v52.8 — full-codebase audit: every remaining per-frame crash path hardened
+
+A complete review of all 30 Lua files (triggered by the v52.6/v52.7 incident) found and fixed the remaining unguarded code paths. The most important one, verified by the runtime harness against the v52.7 code, crashes the **Player tab every frame** for any user whose game version's perk records don't exactly match the mod's hardcoded perk list:
+
+- **`GetLocalizedPerkName` / `GetPerkLvlCount` (`misc/cetUtils.lua`)** — called **every frame** while the Player tab's perk section is open, these did an unguarded `TweakDB:GetRecord("NewPerks."..name):Loc_name_key():...` chain. The perk list (~200 hardcoded enum names) is version-sensitive; if even ONE record doesn't resolve on the user's game version, the whole UI draw pass threw on every frame. Now `pcall` + nil-guarded. *(The harness reproduces this exact crash on v52.7: `cetUtils.lua:22: attempt to index a nil value` → `perks.lua:22 GetPerkNames`.)*
+- **`ReloadListener` (`init.lua`)** — runs every 0.3s and called `Game.GetPlayer():GetPlayerStateMachineBlackboard()` whenever the session reported "loaded". The player entity can be briefly nil during load transitions; an error thrown here propagates through `Cron.Update` and **skips every timer scheduled after it in that frame — including the Search indexer batches** (a stall vector). Now guards player and blackboard.
+- **`Ammo.ChangeModifiers` / `ApplyWeaponModifiers` / `ApplyOtherModifiers` (`items/ammo.lua`)** — added the `modifierGroups[modifier] == nil` guard that `Player.ChangeModifiers` already had (the groups are populated by `Ammo.Preload`; if that ever fails, equipping a weapon with cheats enabled would have thrown `pairs(nil)` from the equip observer), plus a player guard. Equip/unequip observers must never throw.
+- **`Perks.AddPerkLevel` / `RemovePerk` (`player/perks.lua`)** — `Perks.PerkList[category][type]` was used unguarded; a stale combo index or failed Preload passed `nil` straight into `BuyNewPerk` / `ForceSellNewPerk`. Now validated with a message.
+- **`GetQualityFromTDBID` (`ui/tabs/crafting.lua`)** — `item:Quality():Type()` ran unguarded over *every* recipe target record during the crafting tab refresh; recipe targets without a Quality record (modded/legacy) aborted the whole scan. Now `pcall`-wrapped.
+- **`Items.RefreshPlayerVehicles` (`items/items.lua`)** — called from the Misc tab's draw loop; `Game.GetVehicleSystem():GetPlayerVehicles()` ran unguarded during load transitions. Now guards the system and wraps the call.
+- **`QSM_SetActiveVehicle` (`misc/misc.lua`)** — `TweakDB:GetRecord(pv.recordID)` result was used unguarded (`:Model()` on nil). Now guarded.
+
+Also audited and confirmed clean: shadowed-stdlib locals in six other functions (all value-only usage, no stdlib call after the shadow — the v52.6 bug was the one case where the shadowed global was actually called), `RemoveDuplicates` (already fully pcall-hardened), the crafting tab's recipe scan (short-circuit `or` chains are safe), shop/travel/config tabs, `GameHUD`/`GameSession`/`Cron` libraries. The harness grew from 24 to **30 checks** (missing perk record, nil VehicleSystem, etc.) and still reproduces the v52.6 startup crash and the v52.7 perk-name crash verbatim on the respective old code.
+
 ### v52.7 — hotfix: startup crash introduced in v52.6
 
 v52.6 introduced a regression reported within hours: at startup the CET log showed

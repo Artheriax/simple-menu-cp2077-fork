@@ -660,8 +660,11 @@ end
 local function GetQualityFromTDBID(TDBID, default)
     local item = TweakDB:GetRecord(TDBID)
     if item == nil then return default end
-    local q = item:Quality():Type()
-    if q == nil then return Util.T(default ~= nil, default, nil) end
+    -- pcall: some recipe target items (modded or legacy records) have no
+    -- Quality record; an unguarded :Type() on nil would abort the whole
+    -- recipe scan this helper runs inside.
+    local gotQ, q = pcall(function() return item:Quality():Type() end)
+    if not gotQ or q == nil then return Util.T(default ~= nil, default, nil) end
     if q == gamedataQuality.Random then return "Random" end
     return GetLocalizedText(UIItemsHelper.QualityToTierPlusString(q))
 end
