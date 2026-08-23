@@ -32,37 +32,14 @@ local printFuncId
 function Items.Preload()
     DEBUG_printl(LOG_LEVEL.Info, "Getting TweakDB items")
     local startTime = os.clock()
-    local merged = CUtil.TableMerge(
+    Items.tweakDBRecords = CUtil.TableMerge(
         TweakDB:GetRecords('gamedataWeaponItem_Record'),
         TweakDB:GetRecords('gamedataItem_Record'),
         TweakDB:GetRecords('gamedataClothing_Record'),
         TweakDB:GetRecords('gamedataConsumableItem_Record'),
         TweakDB:GetRecords('gamedataGrenade_Record')
     )
-
-    -- Deduplicate the merged record list. TweakDB:GetRecords on a base record
-    -- type also returns records of its derived types (e.g. gamedataItem_Record
-    -- yields weapons, clothing, consumables and grenades as well), so the
-    -- merge above can contain the same record two or three times. Indexing
-    -- duplicates multiplies the indexing workload and produces doubled
-    -- entries in the Search tab (and doubled "Add All" inventory spam).
-    local seen = {}
-    local deduped = {}
-    local duplicates = 0
-    for _, rec in ipairs(merged) do
-        local okId, id = pcall(function() return rec:GetID().value end)
-        local key = (okId and id ~= nil) and tostring(id) or tostring(rec)
-        if seen[key] == nil then
-            seen[key] = true
-            table.insert(deduped, rec)
-        else
-            duplicates = duplicates + 1
-        end
-    end
-
-    Items.tweakDBRecords = deduped
-    DEBUG_printl(LOG_LEVEL.Info, "Getting TweakDB items took:", CUtil.Round((os.clock() - startTime) * 1000, 2).."ms",
-        "| merged:", #merged, "| unique:", #deduped, "| duplicates removed:", duplicates)
+    DEBUG_printl(LOG_LEVEL.Info, "Getting TweakDB items took:", CUtil.Round((os.clock() - startTime) * 1000, 2).."ms")
 end
 
 function Items.RefreshPlayerVehicles()
@@ -278,21 +255,14 @@ function Items.GetFilteredRecords(records, types, tagsMatchList, tagsExcludeList
     local matchPattern = "(<.+>)"
     local startTime = os.clock()
     CUtil.ArrayRemove(records, function(t, i, _)
-        -- pcall hardening: records injected by other mods (TweakXL etc.) can
-        -- have malformed flats; a binding error here used to abort the whole
-        -- filter pass. Malformed records are dropped instead.
-        local okId, tdbidStr = pcall(function() return tostring(t[i]:GetID().value) end)
-        if not okId or tdbidStr == nil then
-            return false
-        end
+        local tdbidStr = tostring(t[i]:GetID().value)
         local defaultTDBID = tdbidStr:match(matchPattern) ~= nil
 
         if defaultTDBID then
             return false
         end
 
-        local okType, itemType = pcall(function() return t[i]:ItemType() end)
-        return (okType and itemType ~= nil)
+        return (t[i]:ItemType() ~= nil)
     end)
     DEBUG_printl(LOG_LEVEL.Trace, "Nil cleanup took:", CUtil.Round(((os.clock() - startTime) * 1000), 5).."ms")
 
@@ -300,14 +270,14 @@ function Items.GetFilteredRecords(records, types, tagsMatchList, tagsExcludeList
     matchPattern = "Prt_"
     startTime = os.clock()
     CUtil.ArrayRemove(records, function(t, i, _)
-        local gotCat, record = pcall(function() return t[i]:ItemCategory() end)
+        local record = t[i]:ItemCategory()
         local gotItype, itype = pcall(function() return t[i]:ItemType():Name().value end)
         local isWPart = false
-        if gotItype and itype ~= nil then
+        if gotItype then
             local findS, _ = string.find(itype, matchPattern)
             isWPart = findS ~= nil
         end
-        return ((gotCat and record ~= nil) or isWPart)
+        return (record ~= nil or isWPart)
     end)
     DEBUG_printl(LOG_LEVEL.Trace, "Category cleanup took:", CUtil.Round(((os.clock() - startTime) * 1000), 5).."ms")
 
@@ -315,13 +285,11 @@ function Items.GetFilteredRecords(records, types, tagsMatchList, tagsExcludeList
     local obsStr = "!OBSOLETE"
     startTime = os.clock()
     CUtil.ArrayRemove(records, function(t, i, _)
-        local gotDn, dname = pcall(function() return t[i]:DisplayName() end)
+        local dname = t[i]:DisplayName()
 
-        if gotDn and dname ~= nil then
-            local gotLoc, lname = pcall(function()
-                return Game.GetLocalizedTextByKey(CName.new(tonumber(dname.hash_lo)))
-            end)
-            if gotLoc and lname ~= nil and lname:upper() == obsStr then
+        if dname ~= nil then
+            local lname = Game.GetLocalizedTextByKey(CName.new(tonumber(dname.hash_lo)))
+            if lname:upper() == obsStr then
                 return false
             end
         end
@@ -376,8 +344,7 @@ function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchLi
     DEBUG_printl(LOG_LEVEL.Info, "Starting filtering process, speed:", (loadingSpeed * 1000).."ms per item",
         "| total records:", n)
     local skippedFilters = 0  -- count of records that failed during filtering
-    local processedCount = 0  -- tracks how many records have been processed (completion check)
-    local nextIndex = 1       -- index of the next record to process
+    local processedCount = 0  -- tracks how many Cron callbacks have run (completion check)
 
     -- Edge case: empty records array — skip straight to PreLoad so the
     -- indexing phase can proceed (it'll find nothing to index and exit).
@@ -392,32 +359,10 @@ function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchLi
         return
     end
 
-    -- Time-sliced batch filtering. The old implementation scheduled ONE
-    -- Cron.After timer per record — tens of thousands of pending timers at
-    -- once. Cron.Update then walked every pending timer on every frame, and
-    -- its removal sweep performed O(n*k) table.remove shifts per frame while
-    -- all of those one-shot timers expired. That timer storm is the
-    -- main-thread stall / memory spike behind the "crash mid building index"
-    -- reports on lower-end machines and heavily modded TweakDBs. A single
-    -- recurring timer that processes a batch of records per tick achieves
-    -- the exact same pacing (records/second) with constant overhead.
-    local TICK = 0.05
-    local totalTime = n * loadingSpeed
-    local batch = math.max(1, math.floor(((n * TICK) / (totalTime > 0 and totalTime or TICK)) + 0.5))
-    if batch > 250 then batch = 250 end -- never process more than 250 records in one tick
-    DEBUG_printl(LOG_LEVEL.Info, "Filter batching:", batch.." records / "..(TICK * 1000).."ms tick")
-
-    local chunkTimerId
-    chunkTimerId = Cron.Every(TICK, function()
-        local processedThisTick = 0
-
-        while processedThisTick < batch and nextIndex <= n do
-            local j = nextIndex
-            local v = records[j]
-            nextIndex = nextIndex + 1
-
+    for j, v in ipairs(records) do
+        local filterFunc = function()
             -- Wrap the per-record filtering in pcall so a malformed TweakDB
-            -- record doesn't abort the entire filter pass. (Part of issue #1 fix)
+            -- record doesn't hang the entire filter pass. (Part of issue #1 fix)
             local okFilter = pcall(function()
                 local hasName = v:DisplayName() ~= CName.new()
                 local tags = v:Tags()
@@ -471,30 +416,30 @@ function Items.ProcessFilters(records, tagsMatchList, tagsExcludeList, idMatchLi
                 end
             end
 
+            -- Use a processedCount counter for the completion check instead
+            -- of relying on j == n. Even though we now compact the array
+            -- (so ipairs goes 1..n in order and j==n will fire), the counter
+            -- approach is more robust against any future changes.
             processedCount = processedCount + 1
-            processedThisTick = processedThisTick + 1
-        end
+            ModState.LoadedPercent = CUtil.Clamp(CUtil.Round((processedCount / n)  * 25, 0), 0, 25)
 
-        ModState.LoadedPercent = CUtil.Clamp(CUtil.Round((processedCount / n) * 25, 0), 0, 25)
-
-        if processedCount >= n then
-            Cron.Halt(chunkTimerId)
-
-            if skippedFilters > 0 then
-                print("[SimpleMenu] Search filter: completed with", skippedFilters, "malformed record(s) skipped")
+            if processedCount == n then
+                if skippedFilters > 0 then
+                    print("[SimpleMenu] Search filter: completed with", skippedFilters, "malformed record(s) skipped")
+                end
+                local postFilterFunc = function()
+                    local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
+                    local avgTime = CUtil.Round(finalTime / n, 5)
+                    ModState.LoadingItemsState = LoadingState.PreLoad
+                    ModState.LoadedPercent = 25
+                    DEBUG_printl(LOG_LEVEL.Info, "Filtering took:", finalTime.."ms,", "average time per item:", avgTime.."ms")
+                    DEBUG_printl(LOG_LEVEL.Info, "Pre-Fetch complete")
+                end
+                Cron.After(0.33, postFilterFunc)
             end
-
-            local postFilterFunc = function()
-                local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
-                local avgTime = CUtil.Round(finalTime / n, 5)
-                ModState.LoadingItemsState = LoadingState.PreLoad
-                ModState.LoadedPercent = 25
-                DEBUG_printl(LOG_LEVEL.Info, "Filtering took:", finalTime.."ms,", "average time per item:", avgTime.."ms")
-                DEBUG_printl(LOG_LEVEL.Info, "Pre-Fetch complete")
-            end
-            Cron.After(0.33, postFilterFunc)
         end
-    end)
+        Cron.After(j * loadingSpeed, filterFunc)
+    end
 end
 
 local quality = {
@@ -602,17 +547,13 @@ function Items.AddItem2(record, amount, forceQual)
     --optional force quality
     forceQual = forceQual or 0
 
-    -- pcall: adding the skip-activity-log tags writes to TweakDB; a malformed
-    -- record (usually injected by another mod) would throw here and abort the
-    -- add loop halfway through.
-    pcall(function() record:AddSkipActivityLogTags() end)
+    record:AddSkipActivityLogTags()
 
     local loops = 1
     local added = amount
-    local gotStruct, structure = pcall(function()
-        return ItemID.GetStructure(ItemID.FromTDBID(record:GetID()))
-    end)
-    local isStackable = gotStruct and structure ~= nil and structure ~= gamedataItemStructure.Unique
+    local isStackable = ItemID.GetStructure(
+        ItemID.FromTDBID(record:GetID())
+    ) ~= gamedataItemStructure.Unique
 
     if not isStackable then
         loops = amount
@@ -637,45 +578,6 @@ function Items.AddItem2(record, amount, forceQual)
 
     record:QueueTagUpdate()
     print("[SimpleMenu]", added, "item(s) of type", record:GetID(), "added")
-end
-
----Queue a list of ItemRecords to be added to the inventory over time.
----"Add All" used to add every search result synchronously in a single frame:
----hundreds or thousands of GiveItem + TweakDB SetFlat calls at once. That is
----both a crash risk (main-thread flood) and the main vector by which OTHER
----mods' items mass-contaminated the savegame. The queue drains gradually.
-Items.addItemQueue = {}
-Items.addItemQueueTimer = nil
-local ADD_QUEUE_DRAIN = 10 -- items processed per 0.1s tick
-
-function Items.QueueAddItems(recordList, amount, forceQual)
-    local queued = 0
-    for _, v in ipairs(recordList) do
-        table.insert(Items.addItemQueue, { record = v, amount = amount, forceQual = forceQual })
-        queued = queued + 1
-    end
-
-    print("[SimpleMenu] Queued", queued, "item(s) for adding (added gradually to avoid frame spikes)")
-
-    if Items.addItemQueueTimer == nil and #Items.addItemQueue > 0 then
-        Items.addItemQueueTimer = Cron.Every(0.1, function()
-            local drained = 0
-            while drained < ADD_QUEUE_DRAIN and #Items.addItemQueue > 0 do
-                local entry = table.remove(Items.addItemQueue, 1)
-                local okAdd, errAdd = pcall(Items.AddItem2, entry.record, entry.amount, entry.forceQual)
-                if not okAdd then
-                    print("[SimpleMenu] Add-all queue: failed to add an item:", errAdd)
-                end
-                drained = drained + 1
-            end
-
-            if #Items.addItemQueue == 0 then
-                Cron.Halt(Items.addItemQueueTimer)
-                Items.addItemQueueTimer = nil
-                print("[SimpleMenu] Add-all queue drained")
-            end
-        end)
-    end
 end
 
 --add whole category of items

@@ -608,25 +608,16 @@ function UIsearch.TabSearch()
         ImGui.BeginDisabled(UIsearch.currentItem == 0)
         local addItemClicked = ImGui.Button(addItemLabel, width, 36)
         if(addItemClicked and selItemData ~= nil) then
-            local okAdd, errAdd = pcall(
-                UIsearch.Items.AddItem2, selItemData, UIsearch.aValue, UIsearch.overridequality
-            )
-            if not okAdd then
-                print("[SimpleMenu] Failed to add item:", errAdd)
-            end
+            UIsearch.Items.AddItem2(selItemData, UIsearch.aValue, UIsearch.overridequality)
         end
         ImGui.EndDisabled()
 
         local addAllClicked = ImGui.Button(addAllLabel, width, 36)
         Elem.QuickTooltip(UILabels.search.tSearchAddAll, Colour.Warning)
         if addAllClicked then
-            -- Adds are queued and drained gradually (10 items per 0.1s) instead
-            -- of dumping every search result into the inventory in a single
-            -- frame. The synchronous flood was a crash risk and the main
-            -- vector by which OTHER mods' items mass-contaminated savegames
-            -- (see the "Savegame bricks after removing mods" section in the
-            -- README). See Items.QueueAddItems in items/items.lua.
-            UIsearch.Items.QueueAddItems(UIsearch.searchResult, UIsearch.aValue, UIsearch.overridequality)
+            for _, v in pairs(UIsearch.searchResult) do
+                UIsearch.Items.AddItem2(v, UIsearch.aValue, UIsearch.overridequality)
+            end
         end
         ImGui.EndDisabled()
     elseif GameState.isLoaded and UIVisible and ModState.LoadingItemsState < LoadingState.Finished then
