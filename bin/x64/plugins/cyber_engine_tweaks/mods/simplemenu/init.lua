@@ -336,19 +336,29 @@ local function DrawLoadingPopup(progress)
 end
 
 local function ProcessTagUpdate(k)
-    SearchQueuedTagUpdates[k].attempts = SearchQueuedTagUpdates[k].attempts + 1
-    local flatSet  = TweakDB:SetFlat(SearchQueuedTagUpdates[k].item.TweakDBID..".tags", SearchQueuedTagUpdates[k].tags)
-    local tweakUpd = TweakDB:Update(SearchQueuedTagUpdates[k].item.Record)
-    if flatSet and tweakUpd then
+    local entry = SearchQueuedTagUpdates[k]
+    if entry == nil then return end
+    entry.attempts = entry.attempts + 1
+
+    -- pcall hardening: SetFlat/Update can throw on records with broken flats.
+    -- The old code called error() after 5 failed attempts, which propagated
+    -- through the Cron callback into CET's update handler — a repeated error
+    -- there could freeze every timer in the mod (one suspected contributor
+    -- to the stuck loading bar). Now we give up gracefully instead.
+    local okFlat, flatSet = pcall(function()
+        return TweakDB:SetFlat(entry.item.TweakDBID..".tags", entry.tags)
+    end)
+    local okUpd, tweakUpd = pcall(function()
+        return TweakDB:Update(entry.item.Record)
+    end)
+
+    if (okFlat and flatSet) and (okUpd and tweakUpd) then
         SearchQueuedTagUpdates[k] = nil
-    elseif SearchQueuedTagUpdates[k].attempts < 5 then
-        SearchQueuedTagUpdates[k].attempts = SearchQueuedTagUpdates[k].attempts + 1
-    else
-        error(
-            "[SimpleMenu] Failed to update TweakDB record: "..
-            SearchQueuedTagUpdates[k].item:GetID().." after "..
-            SearchQueuedTagUpdates[k].attempts.." attempts."
-        )
+    elseif entry.attempts >= 5 then
+        print("[SimpleMenu] Failed to restore TweakDB record tags for "..
+            tostring(entry.item.TweakDBID).." after "..entry.attempts..
+            " attempts -- giving up on this record (record tags reset on next launch)")
+        SearchQueuedTagUpdates[k] = nil
     end
 end
 
