@@ -32,6 +32,39 @@ This fork:
 
 ## What this fork fixes (vs. the upstream snapshot it was forked from)
 
+### v52.7 — hotfix: startup crash introduced in v52.6
+
+v52.6 introduced a regression reported within hours: at startup the CET log showed
+
+```
+classes\itemrecord.lua:130: attempt to call local 'type' (a string value)
+stack traceback: itemrecord.lua:130 in function 'ItemRecord' → items\ammo.lua:164 in function 'Preload' → init.lua:550
+player\perks.lua:13: bad argument #1 to 'pairs' (table expected, got nil)
+```
+
+Both errors had one root cause plus a cascade:
+
+- The `ItemRecord` constructor has always (upstream) declared `local gotType, type = pcall(...)` — a **local named `type` that shadows Lua's global `type()` function**. v52.6 added a `type(recId)` call further down, which then tried to *call the string*. Every single `ItemRecord()` construction threw.
+- `Ammo.Preload` calls `ItemRecord(v)` in an **unprotected loop**, so the error propagated into `onInit` and aborted the entire init callback — everything scheduled after it (Player/Perks preload, all Cron jobs, all observers) never ran. The second error (`perks.lua:13 pairs(nil)`) was pure fallout: `Perks.Preload` never populated its tables, and the Player tab then threw on every UI frame.
+
+v52.7 fixes all three layers:
+
+- **`itemrecord.lua`** — the shadowing local is renamed to `typeName`, and the buggy `type(recId)` check is gone (`.value` already yields a string). Documented with a warning comment so nobody reintroduces it.
+- **`init.lua`** — every subsystem Preload (`Items` / `Ammo` / `Player` / `Perks`) is now individually wrapped in `pcall`. One subsystem failing prints a warning instead of killing Cron, the observers, the hotkeys and the UI data in one go.
+- **`items/ammo.lua`** — the `Ammo.Preload` record loop itself is hardened (`pcall` around `GetID()` and `ItemRecord(v)`, nil-result check), since it walks the entire merged TweakDB record list including other mods' records.
+- **`perks.lua`** — `GetPerkNames` returns just its placeholder instead of throwing when its category table is missing.
+- All of this is covered by a **runtime test harness** (`scripts/` in this repo's parent project) that loads the real mod files into a mocked CET environment and executes the exact crash paths (Ammo.Preload, the full Populate → filter → index → sort pipeline, the Add-All queue). The harness reproduces the v52.6 error verbatim on the old code and passes 24/24 checks on v52.7.
+
+### v52.6 — Search indexer stability overhaul ("crash mid building index")
+
+The Search indexer used to schedule **one `Cron.After` timer per TweakDB record** — with a modded game that is easily **10,000–30,000 pending timers created in a burst**, after which `Cron.Update` walked every pending timer on every frame and its removal sweep performed O(n·k) `table.remove` shifts per frame while they all expired. That timer storm is the main-thread stall / memory spike behind the "game crashes while Simple Menu is building its index" reports (most common on lower-end machines and heavily modded TweakDBs). v52.6 replaces it with a **single recurring timer per phase that processes a time-sliced batch of records per tick** — identical pacing (same records/second, same progress-bar speed), constant overhead, capped at 250 records per tick. Additional hardening in the same pass:
+
+- **Every remaining unprotected native call in the indexing pipeline is now `pcall`-wrapped** (the three cleanup passes in `Items.GetFilteredRecords`, and `DisplayName()`/`Tags()`/`GetID()` in the `ItemRecord` constructor). A malformed record injected by another mod (TweakXL/ArchiveXL leftovers, stale modded TweakDB caches) is now skipped and logged instead of aborting the pass. Note: `pcall` cannot catch a true native access violation — see the Troubleshooting section for what to do when a specific record still hard-crashes.
+- **Record list deduplicated before indexing.** `TweakDB:GetRecords` on a base record type also returns records of derived types (e.g. `gamedataItem_Record` yields weapons, clothing, consumables and grenades as well), so the old 5-way merge contained the same record two or three times. Duplicates doubled the timer load, produced doubled entries in the Search tab, and doubled "Add All" inventory spam. The mod log now prints `merged / unique / duplicates removed` counts so this is visible.
+- **"Add All" no longer dumps every search result into the inventory in a single frame.** Adds are queued and drained at 10 items per 0.1s. The old synchronous flood (hundreds/thousands of `GiveItem` + TweakDB `SetFlat` calls in one frame) was both a crash risk and the main vector by which *other mods'* items mass-contaminated savegames (see the [Savegame bricks](#savegame-bricks-crashes-on-load-after-removing-mods) section).
+- **TweakDB tag-restore queue hardened.** `ProcessTagUpdate` used to call `error()` after 5 failed `SetFlat` attempts; that error propagated through the Cron callback into CET's update handler, and a repeated error there could freeze every timer in the mod (one suspected contributor to the old stuck-loading-bar symptoms). It now gives up gracefully and logs. The queue membership checks were also O(n) linear scans that became O(n²) across a mass "Add All" run — they are O(1) hash lookups now.
+- **`ItemRecord` constructor returns `nil` (→ record skipped) when the TweakDBID can't be resolved**, and refuses to touch the `tags` flat of records whose tags could not be read (previously a failed read would have restored an *empty* tag list onto the record on revert).
+
 ### Compatibility
 - **Bundled `Cron.lua` updated from `1.0.2` → `1.0.3`** — pulls in the upstream psiberx fix for unexpected timer execution order ([cp2077-cet-kit issue #7](https://github.com/psiberx/cp2077-cet-kit)). This fixes subtle timing bugs where button timers and the loading progress bar could tick out of order.
 - **Belt-and-suspenders `pcall` protection** on every potentially-fragile game API call (police toggle, achievement unlock, vehicle repair, quest ending, item quality lookup). A missing or renamed method on any future patch will now print a warning instead of killing the menu.
@@ -210,6 +243,35 @@ You have a stale modded TweakDB cache. This is the single most common cause of p
 2. Delete `<Cyberpunk 2077>/r6/cache/modded/tweakdb.bin`.
 3. (Optional but recommended) Also delete `<Cyberpunk 2077>/r6/cache/final/tweakdb.bin` — it will be rebuilt on next launch.
 4. Launch the game. The first launch after this will take longer as the cache is rebuilt.
+
+### Game crashes while Simple Menu is building its Search index
+
+The Search indexer walks **every** item record in the merged runtime TweakDB — including records injected by *other* installed mods (TweakXL / ArchiveXL item packs, Virtual Atelier stores, leftover records from mods you already removed, or a stale `r6/cache/modded/tweakdb.bin`). Simple Menu is usually the *messenger*, not the culprit: a hard crash mid-index almost always means one of those records is malformed, and the crash is happening inside CET's TweakDB binding while reading it (`pcall` cannot catch a native access violation).
+
+Starting with v52.6 the indexer is also far more resilient (batched processing instead of tens of thousands of Cron timers, every read `pcall`-wrapped, malformed records skipped and logged — see the changelog at the top of this README). If you still crash mid-index:
+
+1. Check `simplemenu.log` — v52.6 prints `[SimpleMenu] Search index: skipping malformed TweakDB record #N (record.id)` for every record it survives. The last record logged before the crash is your prime suspect.
+2. Close the game and delete `<Cyberpunk 2077>/r6/cache/modded/tweakdb.bin` (the stale modded TweakDB cache — the single most common cause, since leftover records keep "existing" with broken data after their source mod is gone).
+3. Remove or update TweakXL/ArchiveXL item mods you no longer use, then repeat step 2.
+4. Test with only CET + RED4ext + Simple Menu installed. If the crash disappears, re-add your mods one at a time until it returns.
+
+### Savegame bricks (crashes on load) after removing mods
+
+Some mods store data in save files; removing those mods can make the save crash on load until the mod is installed again (this is a general Cyberpunk 2077 modding behaviour — see the [REDModding wiki troubleshooting page](https://wiki.redmodding.org/cyberpunk-2077-modding/for-mod-users/user-guide-troubleshooting)). To be clear about what Simple Menu itself does and does **not** store in your savegame:
+
+- Simple Menu is a pure CET/Lua mod. It adds **no archives, no TweakXL records, no redscripts**.
+- Its cheat toggles (god mode, infinite stamina, …) use *non-persistent* stat modifiers and config JSON files on disk — nothing that requires Simple Menu to be present when a save loads.
+- The only savegame-persistent data it can create are **vanilla** item stats (quality / item level on items you explicitly upgraded) and the **items you add via the Items/Search tabs**.
+
+The brick scenario reported by some users — *"save only loads when Simple Menu is installed, but then the game crashes mid building index"* — is the same polluted-TweakDB problem described above, seen from the other side:
+
+1. The Search tab indexes **all** records in the merged TweakDB, **including items added by other mods**. If you add such an item (especially via "Add All" on a broad search), it is stored in your savegame **by its TweakDBID from that other mod**.
+2. If that mod is later removed (or its records disappear because the stale modded TweakDB cache was deleted/rebuilt), the save now references item IDs that no longer resolve → the game can crash while restoring the inventory during load.
+3. As long as the full modding stack that still resolves those IDs is installed, the save *appears* to load "only with Simple Menu installed" — then the indexer walks the same broken records and crashes mid-index. Removing Simple Menu does not remove the broken records; it just removes the thing that made them visible (and if the whole CET/RED4ext/TweakXL stack or the modded cache goes with it, the save stops loading entirely).
+
+**Recovery:** reinstall the item mods (or the full modding stack) that provided the foreign items → load the save → remove those items from your inventory (drop / disassemble / sell) → save → uninstall cleanly. If the save file itself was truncated by a crash *during* an autosave, no mod can fix that file — always keep more than one rolling manual save while running a heavily modded setup.
+
+**Prevention:** since v52.6, "Add All" drains gradually instead of flooding the inventory in one frame, which removes the crash vector — but adding hundreds of foreign-mod items is still the fastest way to make your save depend on mods you may later remove. Keep "Add All" to base-game categories, and clean out modded items before uninstalling an item mod.
 
 ### CET and CyberCMD conflict
 

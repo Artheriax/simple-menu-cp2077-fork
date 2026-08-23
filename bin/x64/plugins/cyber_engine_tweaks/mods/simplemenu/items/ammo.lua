@@ -159,9 +159,22 @@ end
 function Ammo.Preload()
     TweakDBRecords = require("items/items").tweakDBRecords
 
+    -- pcall hardening: this loop walks the ENTIRE merged TweakDB record list
+    -- (including records injected by other mods). One malformed record used
+    -- to throw here, which aborted the whole mod init (this is the exact
+    -- cascade seen in the wild: 'itemrecord.lua: attempt to call ...' from
+    -- ammo.lua:164 killing onInit, leaving Perks/Cron dead). ItemRecord(v)
+    -- can also legitimately return nil (unresolvable TweakDBID) since v52.6.
     for _, v in pairs(TweakDBRecords) do
-        if string.find(v:GetID().value, "Ammo.") and not string.find(v:GetID().value, "Items.") then
-            table.insert(AmmoItems, ItemRecord(v))
+        local okId, id = pcall(function() return v:GetID().value end)
+        if okId and id ~= nil
+            and string.find(id, "Ammo.") and not string.find(id, "Items.") then
+            local okRec, newRec = pcall(function() return ItemRecord(v) end)
+            if okRec and newRec ~= nil then
+                table.insert(AmmoItems, newRec)
+            else
+                print("[SimpleMenu] Ammo.Preload: skipping malformed ammo record:", id)
+            end
         end
     end
 

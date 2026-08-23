@@ -336,19 +336,29 @@ local function DrawLoadingPopup(progress)
 end
 
 local function ProcessTagUpdate(k)
-    SearchQueuedTagUpdates[k].attempts = SearchQueuedTagUpdates[k].attempts + 1
-    local flatSet  = TweakDB:SetFlat(SearchQueuedTagUpdates[k].item.TweakDBID..".tags", SearchQueuedTagUpdates[k].tags)
-    local tweakUpd = TweakDB:Update(SearchQueuedTagUpdates[k].item.Record)
-    if flatSet and tweakUpd then
+    local entry = SearchQueuedTagUpdates[k]
+    if entry == nil then return end
+    entry.attempts = entry.attempts + 1
+
+    -- pcall hardening: SetFlat/Update can throw on records with broken flats.
+    -- The old code called error() after 5 failed attempts, which propagated
+    -- through the Cron callback into CET's update handler — a repeated error
+    -- there could freeze every timer in the mod (one suspected contributor
+    -- to the stuck loading bar). Now we give up gracefully instead.
+    local okFlat, flatSet = pcall(function()
+        return TweakDB:SetFlat(entry.item.TweakDBID..".tags", entry.tags)
+    end)
+    local okUpd, tweakUpd = pcall(function()
+        return TweakDB:Update(entry.item.Record)
+    end)
+
+    if (okFlat and flatSet) and (okUpd and tweakUpd) then
         SearchQueuedTagUpdates[k] = nil
-    elseif SearchQueuedTagUpdates[k].attempts < 5 then
-        SearchQueuedTagUpdates[k].attempts = SearchQueuedTagUpdates[k].attempts + 1
-    else
-        error(
-            "[SimpleMenu] Failed to update TweakDB record: "..
-            SearchQueuedTagUpdates[k].item:GetID().." after "..
-            SearchQueuedTagUpdates[k].attempts.." attempts."
-        )
+    elseif entry.attempts >= 5 then
+        print("[SimpleMenu] Failed to restore TweakDB record tags for "..
+            tostring(entry.item.TweakDBID).." after "..entry.attempts..
+            " attempts -- giving up on this record (record tags reset on next launch)")
+        SearchQueuedTagUpdates[k] = nil
     end
 end
 
@@ -536,10 +546,22 @@ function SimpleMenu:new()
         Session.Listen(UpdateState)                --Subsequent state updates on state listener
 
         --Bunch of loading/indexing stuff
-        SimpleMenu.Items.Preload()                 --Load TweakDB Items and create ItemRecords
-        SimpleMenu.Ammo.Preload()                  --Create Weapon cheat stat modifiers
-        SimpleMenu.Player.Preload()                --Create cheat modifiers and gamedataStatType lists
-        SimpleMenu.Perks.Preload()                 --Create gamedataNewPerkType lists and Perk Categories
+        -- Each Preload is isolated: if one subsystem throws, the rest of
+        -- init still runs. Before this, a single failure aborted the whole
+        -- onInit callback — leaving Cron dead (no timers ever fire, loading
+        -- bar never appears), observers/overrides unregistered, and the
+        -- Perks tables empty, which then cascaded into UI errors like
+        -- "perks.lua: bad argument #1 to 'pairs'" on every frame.
+        local function safeInitCall(name, fn)
+            local ok, err = pcall(fn)
+            if not ok then
+                print("[SimpleMenu] WARNING: "..name.." failed during init: "..tostring(err))
+            end
+        end
+        safeInitCall("Items.Preload",  SimpleMenu.Items.Preload)   --Load TweakDB Items and create ItemRecords
+        safeInitCall("Ammo.Preload",   SimpleMenu.Ammo.Preload)    --Create Weapon cheat stat modifiers
+        safeInitCall("Player.Preload", SimpleMenu.Player.Preload)  --Create cheat modifiers and gamedataStatType lists
+        safeInitCall("Perks.Preload",  SimpleMenu.Perks.Preload)   --Create gamedataNewPerkType lists and Perk Categories
 
         --Repeating jobs (lifetime)
         Cron.Every(0.3, ReloadListener)            --Weapon state "listener"

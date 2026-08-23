@@ -25,13 +25,18 @@ function ItemRecord:new(TDBItemRecord)
     end
     if #vt == 0 then vt[1] = "" end
 
-    local gotType, type
-    gotType, type = pcall(function()
+    -- NOTE: this local MUST NOT be named `type` — it shadows Lua's global
+    -- type() function for the rest of the constructor. v52.6 shipped a
+    -- `type(recId)` call below that then tried to CALL this string and
+    -- crashed every single ItemRecord construction (GitHub reports:
+    -- "attempt to call local 'type' (a string value)").
+    local gotType, typeName
+    gotType, typeName = pcall(function()
         return Game.GetLocalizedTextByKey(
             TDBItemRecord:ItemType():LocalizedType()
         )
     end)
-    if not gotType or type == nil then type = "" end
+    if not gotType or typeName == nil then typeName = "" end
 
     local gotCategory, category
     gotCategory, category = pcall(function()
@@ -82,7 +87,8 @@ function ItemRecord:new(TDBItemRecord)
 
     local gotQuality, qualityRec = pcall(function() return TDBItemRecord:Quality() end)
     if not gotQuality or qualityRec == nil then
-        print("[SimpleMenu] Nil quality on record:", TDBItemRecord:GetID().value)
+        local okId, idStr = pcall(function() return TDBItemRecord:GetID().value end)
+        print("[SimpleMenu] Nil quality on record:", (okId and idStr) or "?")
         qualityRec = nil
     end
 
@@ -108,20 +114,39 @@ function ItemRecord:new(TDBItemRecord)
         qualityLevel = -1
     end
 
+    -- Remaining hot-path native calls, hardened. These three used to run
+    -- completely unprotected; on records injected by other mods a binding
+    -- error here would abort the record's construction mid-index.
+    local gotKey, dispKey = pcall(function() return TDBItemRecord:DisplayName() end)
+    local gotLoc, locName = pcall(function()
+        return Game.GetLocalizedTextByKey(gotKey and dispKey or CName.new())
+    end)
+    local gotTags, tags = pcall(function() return TDBItemRecord:Tags() end)
+    local gotId, recId = pcall(function() return TDBItemRecord:GetID().value end)
     local o = {
-        LocalizedName  = Game.GetLocalizedTextByKey(TDBItemRecord:DisplayName()),
+        LocalizedName  = (gotLoc and locName) or "",
         QualityLevel   = qualityLevel,
         QualityName    = qualityName,
         VisualTags     = vt,
-        TDBTags        = TDBItemRecord:Tags(),
-        TweakDBID      = TDBItemRecord:GetID().value,
-        Type           = type,
+        -- nil (as opposed to {}) means "record tags unreadable — never
+        -- touch this record's tag flat"; see AddSkipActivityLogTags.
+        TDBTags        = (gotTags and tags ~= nil) and tags or nil,
+        -- (recId comes from `.value`, so on success it is already a string;
+        -- no type() call needed — and `type` is shadowed above anyway.)
+        TweakDBID      = (gotId and recId) or "",
+        Type           = typeName,
         Category       = category,
         Evolution      = evo,
         IsIconic       = isIconic,
         Description    = desc,
         Record         = TDBItemRecord
     }
+
+    -- A record without a resolvable TweakDBID is unusable; return nil so the
+    -- caller (the batch indexer / CreateItemRecordFromTDBID) can skip it.
+    if o.TweakDBID == "" then
+        return nil
+    end
 
     return setmetatable(o, self)
 end
@@ -302,23 +327,39 @@ function ItemRecord:GetStatsDescription()
 end
 
 function ItemRecord:AddSkipActivityLogTags()
-    if not CUtil.AnyKeyExists(SearchQueuedTagUpdates, self:GetID()) then
-        local tags = self.Record:Tags()
+    -- TDBTags == nil means the record's tags could not be read at index time;
+    -- modifying (and later restoring) its tag flat is unsafe, so skip.
+    if self.TDBTags == nil then return false end
+
+    -- O(1) table lookup instead of CUtil.AnyKeyExists (a linear scan that
+    -- became O(n^2) across a mass "Add All" run).
+    if SearchQueuedTagUpdates[self:GetID()] == nil then
+        local okTags, tags = pcall(function() return self.Record:Tags() end)
+        if not okTags or tags == nil then return false end
+
         table.insert(tags, CName.new("SkipActivityLog"))
         table.insert(tags, CName.new("SkipActivityLogOnRemove"))
         table.insert(tags, CName.new("HideInBackpackUI"))
-        local flatSucc = TweakDB:SetFlat(self.TweakDBID..".tags", tags)
-        local updSucc = TweakDB:Update(self.Record)
-        return flatSucc and updSucc
+
+        local okFlat, flatSucc = pcall(function()
+            return TweakDB:SetFlat(self.TweakDBID..".tags", tags)
+        end)
+        local okUpd, updSucc = pcall(function()
+            return TweakDB:Update(self.Record)
+        end)
+        return (okFlat and flatSucc) and (okUpd and updSucc)
     end
 
     return false
 end
 
 function ItemRecord:QueueTagUpdate()
+    -- TDBTags == nil: we never added skip tags (AddSkipActivityLogTags
+    -- refuses), so there is nothing to restore.
+    if self.TDBTags == nil then return end
     local k = tostring(self:GetID())
 
-    if not CUtil.AnyKeyExists(SearchQueuedTagUpdates, k) then
+    if SearchQueuedTagUpdates[k] == nil then
         SearchQueuedTagUpdates[k] = {
             item = self,
             tags = self.TDBTags,
@@ -546,10 +587,32 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
         DEBUG_printl(LOG_LEVEL.Info, "Starting indexing process, speed:", (loadingSpeed * 1000).."ms per item",
             "| total records:", ModState.TotalRecords)
         local skippedRecords = 0  -- count of records that failed to construct
-        local processedCount = 0   -- tracks how many Cron callbacks have run (completion check)
+        local processedCount = 0  -- tracks how many records have been processed (completion check)
+        local nextIndex = 1       -- index of the next record to process
+        local total = ModState.TotalRecords
 
-        for k, v in ipairs(TDBItemRecordArray) do
-            local insertFunc = function ()
+        -- Time-sliced batch indexing (same rationale as the filter phase in
+        -- Items.ProcessFilters): one recurring timer replaces the old
+        -- one-Cron.After-per-record scheme, eliminating the
+        -- tens-of-thousands-of-pending-timers storm that stalled the main
+        -- thread and crashed the game mid-index on lower-end machines and
+        -- heavily modded TweakDBs. Pacing (records/second) is identical to
+        -- the old per-item schedule.
+        local TICK = 0.05
+        local totalTime = total * loadingSpeed
+        local batch = math.max(1, math.floor(((total * TICK) / (totalTime > 0 and totalTime or TICK)) + 0.5))
+        if batch > 250 then batch = 250 end -- never process more than 250 records in one tick
+        DEBUG_printl(LOG_LEVEL.Info, "Index batching:", batch.." records / "..(TICK * 1000).."ms tick")
+
+        local chunkTimerId
+        chunkTimerId = Cron.Every(TICK, function()
+            local processedThisTick = 0
+
+            while processedThisTick < batch and nextIndex <= total do
+                local k = nextIndex
+                local v = TDBItemRecordArray[k]
+                nextIndex = nextIndex + 1
+
                 -- Wrap ItemRecord(v) construction in pcall so a single
                 -- malformed/broken TweakDB record doesn't hang the entire
                 -- indexing process. (Part of GitHub issue #1 fix)
@@ -570,48 +633,47 @@ function ItemRecord.CreateItemRecordArray(TDBItemRecordArray, sort, timerId)
                     end
                 end
 
-                -- Use a processedCount counter for the completion check instead
-                -- of relying on k == TotalRecords. Even though we now compact
-                -- the array (so ipairs goes 1..N in order and k==N will fire),
-                -- the counter approach is more robust against any future
-                -- changes to how the array is built.
                 processedCount = processedCount + 1
-                ModState.LoadedPercent = CUtil.Clamp(25 + CUtil.Round((processedCount / ModState.TotalRecords)  * 75, 0), 25, 99)
-
-                if processedCount == ModState.TotalRecords then
-                    DEBUG_printl(LOG_LEVEL.Trace, "Index complete")
-                    if skippedRecords > 0 then
-                        print("[SimpleMenu] Search index: completed with", skippedRecords, "malformed record(s) skipped")
-                    end
-                    local postIndex = function()
-                        -- Guard the transition so this callback is idempotent.
-                        -- Only advance FROM Loading; if a later stage (sort,
-                        -- consumables, ...) already ran, never step the state
-                        -- machine backwards — that would deadlock the pipeline
-                        -- and leave the loading bar stuck at 99% forever.
-                        if sort then
-                            if ModState.LoadingItemsState == LoadingState.Loading then
-                                ModState.LoadingItemsState = LoadingState.MainIndex
-                            end
-                        else
-                            DEBUG_printl(LOG_LEVEL.Trace, "Skipping sort")
-                            if ModState.LoadingItemsState == LoadingState.Loading then
-                                ModState.LoadingItemsState = LoadingState.Sorted
-                            end
-                        end
-                        local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
-                        local avgTime = CUtil.Round(finalTime / ModState.TotalRecords, 5)
-                        DEBUG_printl(LOG_LEVEL.Info,
-                            "Record create took:", finalTime.."ms,",
-                            "average time per item:", avgTime.."ms"
-                        )
-                        Cron.Halt(timerId)
-                    end
-                    Cron.After(0.33, postIndex)
-                end
+                processedThisTick = processedThisTick + 1
             end
-            Cron.After((k * loadingSpeed), insertFunc)
-        end
+
+            ModState.LoadedPercent = CUtil.Clamp(25 + CUtil.Round((processedCount / total) * 75, 0), 25, 99)
+
+            if processedCount >= total then
+                Cron.Halt(chunkTimerId)
+                DEBUG_printl(LOG_LEVEL.Trace, "Index complete")
+
+                if skippedRecords > 0 then
+                    print("[SimpleMenu] Search index: completed with", skippedRecords, "malformed record(s) skipped")
+                end
+
+                local postIndex = function()
+                    -- Guard the transition so this callback is idempotent.
+                    -- Only advance FROM Loading; if a later stage (sort,
+                    -- consumables, ...) already ran, never step the state
+                    -- machine backwards — that would deadlock the pipeline
+                    -- and leave the loading bar stuck at 99% forever.
+                    if sort then
+                        if ModState.LoadingItemsState == LoadingState.Loading then
+                            ModState.LoadingItemsState = LoadingState.MainIndex
+                        end
+                    else
+                        DEBUG_printl(LOG_LEVEL.Trace, "Skipping sort")
+                        if ModState.LoadingItemsState == LoadingState.Loading then
+                            ModState.LoadingItemsState = LoadingState.Sorted
+                        end
+                    end
+                    local finalTime = CUtil.Round(((os.clock() - startTime) * 1000), 5)
+                    local avgTime = CUtil.Round(finalTime / ModState.TotalRecords, 5)
+                    DEBUG_printl(LOG_LEVEL.Info,
+                        "Record create took:", finalTime.."ms,",
+                        "average time per item:", avgTime.."ms"
+                    )
+                    Cron.Halt(timerId)
+                end
+                Cron.After(0.33, postIndex)
+            end
+        end)
 
         if sort then
             local sortFunc = function()

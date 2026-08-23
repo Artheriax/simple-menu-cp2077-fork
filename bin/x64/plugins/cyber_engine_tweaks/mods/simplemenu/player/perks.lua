@@ -10,7 +10,15 @@ Perks.PerkList = { }
 function Perks.GetPerkNames(category)
     local perkNameList = {}
     table.insert(perkNameList, "")
-    for _, v in pairs(Perks.PerkList[category]) do
+    -- Guard: if Perks.Preload() never ran (e.g. init was interrupted), the
+    -- category table is nil and pairs() would throw, killing the whole UI
+    -- draw pass. Return just the placeholder instead.
+    local catList = Perks.PerkList and Perks.PerkList[category]
+    if catList == nil then
+        print("[SimpleMenu] Perks: no perk list for category '"..tostring(category).."' (Preload did not run?)")
+        return perkNameList
+    end
+    for _, v in pairs(catList) do
         table.insert(perkNameList, CUtil.GetLocalizedPerkName(v))
     end
     return perkNameList
